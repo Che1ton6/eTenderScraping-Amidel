@@ -38,12 +38,12 @@ def main():
         
     except FileNotFoundError as e:
         print(f"Configuration Error: {e}")
-        print("Please ensure config/config.json exists and is properly formatted.")
+        print("Please ensure config.json exists and is properly formatted.")
         sys.exit(1)
         
     except ValueError as e:
         print(f"Configuration Error: {e}")
-        print("Please check your configuration settings in config/config.json.")
+        print("Please check your configuration settings in config.json.")
         sys.exit(1)
         
     except KeyboardInterrupt:

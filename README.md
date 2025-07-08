@@ -20,18 +20,16 @@ Web scraper for extracting tender data from the South African eTenders website (
 EtenderScraping/
 ├── TenderScraper.py         # Main scraper class
 ├── Utils.py                 # Utility functions
+├── ConfigManager.py         # Configuration management
+├── config.json              # Configuration settings
 ├── main.py                  # Entry point
 ├── requirements.txt         # Python dependencies
 ├── README.md               # This file
 ├── data/                   # Output Excel files
 │   ├── tenders_*.xlsx      # Date-specific tender data
 │   └── master_tenders.xlsx # Master file with all tenders
-├── logs/                   # Log files
-│   └── scraper.log         # Scraping logs
-└── config/                 # Configuration package
-    ├── __init__.py         # Package initialization
-    ├── config.json         # Configuration settings
-    └── ConfigManager.py    # Configuration management
+└── logs/                   # Log files
+    └── scraper.log         # Scraping logs
 ```
 
 ## Installation
@@ -49,7 +47,7 @@ EtenderScraping/
 
 ## Configuration
 
-Edit `config/config.json` to customize the scraper:
+Edit `config.json` to customize the scraper:
 
 ```json
 {
@@ -107,7 +105,7 @@ python main.py
 
 ### Custom Configuration
 
-1. Edit `config/config.json` with your desired settings
+1. Edit `config.json` with your desired settings
 2. Run the scraper:
    ```bash
    python main.py
@@ -173,7 +171,7 @@ The scraper includes robust error handling for:
    - Or place ChromeDriver in the project directory
 
 2. **Configuration errors**
-   - Check `config/config.json` format and required fields
+   - Check `config.json` format and required fields
    - Ensure date format is YYYY-MM-DD
 
 3. **No data scraped**
@@ -188,7 +186,7 @@ The scraper includes robust error handling for:
 
 ### Debug Mode
 
-Enable debug logging by changing the log level in `config/config.json`:
+Enable debug logging by changing the log level in `config.json`:
 
 ```json
 {

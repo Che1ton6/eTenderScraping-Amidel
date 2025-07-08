@@ -11,7 +11,7 @@ class ConfigManager:
     and providing easy access to configuration values throughout the application.
     """
     
-    def __init__(self, configPath: str = "config/config.json"):
+    def __init__(self, configPath: str = "config.json"):
         """
         Initialize the ConfigManager with a configuration file path.
         
@@ -85,6 +85,9 @@ class ConfigManager:
             except KeyError:
                 raise ValueError(f"Missing required configuration: {section}.{field}")
     
+    # These getter methods could be simplified to direct access in TenderScraper.py
+    # For example: self.configManager.config.get('scraping', {}) instead of self.configManager.getScrapingConfig()
+    # However, they are kept for possible future purposes
     def getScrapingConfig(self) -> Dict[str, Any]:
         """
         Get scraping configuration including dates and URL.
@@ -138,7 +141,8 @@ class ConfigManager:
             Dict containing logging configuration
         """
         return self.config.get('logging', {})
-    
+
+    # This function is currently not in use but might be important for automation purpose
     def updateConfig(self, updates: Dict[str, Any]) -> None:
         """
         Update configuration with new values and save to file.
@@ -146,25 +150,23 @@ class ConfigManager:
         Args:
             updates (Dict): Dictionary containing configuration updates
         """
-        def deepUpdate(d, u):
-            for k, v in u.items():
-                if isinstance(v, dict):
-                    d[k] = deepUpdate(d.get(k, {}), v)
-                else:
-                    d[k] = v
-            return d
+        # Deep merge the updates into config
+        for k, v in updates.items():
+            if isinstance(v, dict):
+                if k not in self.config:
+                    self.config[k] = {}
+                for sub_k, sub_v in v.items():
+                    self.config[k][sub_k] = sub_v
+            else:
+                self.config[k] = v
         
-        deepUpdate(self.config, updates)
-        self.saveConfig()
-    
-    def saveConfig(self) -> None:
-        """
-        Save current configuration to the JSON file.
-        """
+        # Save to file
         try:
             with open(self.configPath, 'w') as file:
                 json.dump(self.config, file, indent=4)
-            logging.info(f"Configuration saved to {self.configPath}")
+            logging.info(f"Configuration updated and saved to {self.configPath}")
         except Exception as e:
             logging.error(f"Failed to save configuration: {e}")
-            raise 
+            raise
+    
+ 

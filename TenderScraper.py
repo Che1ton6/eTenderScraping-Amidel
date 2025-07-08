@@ -17,7 +17,7 @@ from selenium.common.exceptions import (
     NoSuchElementException
 )
 
-from config.ConfigManager import ConfigManager
+from ConfigManager import ConfigManager
 from Utils import Utils
 
 class TenderScraper:
@@ -28,7 +28,7 @@ class TenderScraper:
     data extraction, error handling, duplicate prevention, and result export.
     """
     
-    def __init__(self, configPath: str = "config/config.json"):
+    def __init__(self, configPath: str = "config.json"):
         """
         Initialize the TenderScraper with configuration.
         
@@ -46,6 +46,8 @@ class TenderScraper:
         self.reportDate = self.utils.getCurrentDate()
         
         # Get configuration
+        # These could be simplified to direct access: self.configManager.config.get('scraping', {})
+        # But using getter methods for OOP best practices and future flexibility
         self.scrapingConfig = self.configManager.getScrapingConfig()
         self.browserConfig = self.configManager.getBrowserConfig()
         self.timingConfig = self.configManager.getTimingConfig()
