@@ -7,13 +7,11 @@ class Utils:
     """
     Utility class providing helper functions for data processing, date parsing,
     text cleaning, and other common operations used by the TenderScraper.
-    """
     
-    def __init__(self):
-        """
-        Initialize the Utils class.
-        """
-        pass
+    Note: All methods in this class are stateless and could be converted to static methods
+    or module-level functions if desired. Currently kept as instance methods for
+    consistency with existing codebase and future flexibility.
+    """
     
     def parseClosingDateTime(self, dateStr: str) -> Tuple[str, str]:
         """
@@ -124,6 +122,7 @@ class Utils:
         
         return f"{tenderId}_{pubDate}"
     
+    # On retries in the TenderScraper, some duplicates are encountered and this method helps to clean it up.
     def isDuplicate(self, tenderInfo: dict, processedTenders: set) -> bool:
         """
         Check if a tender is a duplicate based on unique key.
@@ -138,18 +137,7 @@ class Utils:
         uniqueKey = self.generateUniqueKey(tenderInfo)
         return uniqueKey in processedTenders
     
-    def formatDateForFilename(self, date: datetime, formatStr: str = "%d_%m_%Y") -> str:
-        """
-        Format a date for use in filename.
-        
-        Args:
-            date (datetime): Date to format
-            formatStr (str): Format string for the date
-            
-        Returns:
-            str: Formatted date string
-        """
-        return date.strftime(formatStr)
+
     
     def validateTenderData(self, tenderInfo: dict) -> bool:
         """
@@ -162,7 +150,7 @@ class Utils:
             bool: True if data is valid, False otherwise
         """
         # Check for required fields
-        requiredFields = ['TENDER_DESCRIPTION', 'PUBLICATION_DATE']
+        requiredFields = ['TENDER_ID', 'TENDER_DESCRIPTION', 'PUBLICATION_DATE', 'CLOSING_DATE']
         
         for field in requiredFields:
             if not tenderInfo.get(field):
@@ -176,6 +164,15 @@ class Utils:
                 datetime.strptime(pubDate, "%Y/%m/%d")
             except ValueError:
                 logging.warning(f"Invalid publication date format: {pubDate}")
+                return False
+        
+        # Validate closing date format (if not empty)
+        closingDate = tenderInfo.get('CLOSING_DATE', '')
+        if closingDate and closingDate != "":
+            try:
+                datetime.strptime(closingDate, "%Y/%m/%d")
+            except ValueError:
+                logging.warning(f"Invalid closing date format: {closingDate}")
                 return False
         
         return True
@@ -200,11 +197,3 @@ class Utils:
         
         return cleanedData
     
-    def getCurrentDate(self) -> str:
-        """
-        Get current date in YYYY/MM/DD format for REPORT_DATE field.
-        
-        Returns:
-            str: Current date in YYYY/MM/DD format
-        """
-        return datetime.now().strftime("%Y/%m/%d") 

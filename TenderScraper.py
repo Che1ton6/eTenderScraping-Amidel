@@ -43,11 +43,11 @@ class TenderScraper:
         self.driver = None
         self.tenderData = []
         self.processedTenders = set()  # Track processed tenders to prevent duplicates
-        self.reportDate = self.utils.getCurrentDate()
+        self.reportDate = datetime.now().strftime("%Y/%m/%d")
         
         # Get configuration
         # These could be simplified to direct access: self.configManager.config.get('scraping', {})
-        # But using getter methods for OOP best practices and future flexibility
+        # But using getter methods for possible future improvements.
         self.scrapingConfig = self.configManager.getScrapingConfig()
         self.browserConfig = self.configManager.getBrowserConfig()
         self.timingConfig = self.configManager.getTimingConfig()
@@ -413,7 +413,7 @@ class TenderScraper:
     
     def exportToExcel(self) -> None:
         """
-        Export scraped data to Excel files (date-specific and cumulative).
+        Export scraped data to Excel files (date-specific and cumulative) with proper formatting.
         """
         if not self.tenderData:
             logging.warning("No tender data to export")
@@ -444,8 +444,8 @@ class TenderScraper:
         
         dfDateSpecific = pd.DataFrame(dateSpecificData)[finalColumns]
         
-        # Save date-specific file
-        dfDateSpecific.to_excel(dateSpecificFile, index=False)
+        # Save date-specific file with proper formatting
+        self._saveExcelWithFormatting(dfDateSpecific, dateSpecificFile)
         logging.info(f"Saved date-specific results to {dateSpecificFile}")
         
         # Handle cumulative file - load existing data and append new data
@@ -478,15 +478,103 @@ class TenderScraper:
         for idx, tender in enumerate(cumulativeData, 1):
             tender["RECORD_ID"] = len(cumulativeData) - idx + 1
         
-        # Save cumulative file
+        # Save cumulative file with proper formatting
         if cumulativeData:
             dfCumulative = pd.DataFrame(cumulativeData)[finalColumns]
-            dfCumulative.to_excel(cumulativeFile, index=False)
+            self._saveExcelWithFormatting(dfCumulative, cumulativeFile)
             logging.info(f"Saved cumulative results to {cumulativeFile} ({newTendersAdded} new tenders added)")
         else:
             logging.warning("No data to save in cumulative file")
         
         logging.info(f"Total tenders exported: {len(self.tenderData)} (date-specific), {len(cumulativeData)} (cumulative)")
+    
+    def _saveExcelWithFormatting(self, df: pd.DataFrame, filename: str) -> None:
+        """
+        Save DataFrame to Excel with proper formatting for dates and links.
+        
+        Args:
+            df (pd.DataFrame): DataFrame to save
+            filename (str): Output filename
+        """
+        try:
+            # First save with pandas to get the basic structure
+            df.to_excel(filename, index=False, engine='openpyxl')
+            
+            # Now use openpyxl to apply proper formatting
+            from openpyxl import load_workbook
+            from openpyxl.styles import NamedStyle
+            from openpyxl.utils.dataframe import dataframe_to_rows
+            from datetime import datetime
+            
+            # Load the workbook
+            wb = load_workbook(filename)
+            ws = wb.active
+            
+            # Define date style
+            date_style = NamedStyle(name="date_style")
+            date_style.number_format = "YYYY/MM/DD"
+            
+            # Get column indices for date columns
+            date_columns = ['REPORT_DATE', 'PUBLICATION_DATE', 'CLOSING_DATE', 'BRIEFING_DATE']
+            date_col_indices = []
+            
+            for col_name in date_columns:
+                if col_name in df.columns:
+                    col_idx = df.columns.get_loc(col_name) + 1  # +1 because Excel columns are 1-indexed
+                    date_col_indices.append(col_idx)
+            
+            # Apply date formatting to date columns
+            for col_idx in date_col_indices:
+                for row_idx in range(2, len(df) + 2):  # Start from row 2 (skip header)
+                    cell = ws.cell(row=row_idx, column=col_idx)
+                    if cell.value:
+                        try:
+                            # Convert string date to datetime object
+                            if isinstance(cell.value, str):
+                                date_obj = datetime.strptime(cell.value, "%Y/%m/%d")
+                                cell.value = date_obj
+                            cell.style = date_style
+                        except ValueError:
+                            # If date parsing fails, keep as string
+                            pass
+            
+            # Handle hyperlinks in LINK column
+            link_col_idx = None
+            if 'LINK' in df.columns:
+                link_col_idx = df.columns.get_loc('LINK') + 1
+                
+                for row_idx in range(2, len(df) + 2):  # Start from row 2 (skip header)
+                    cell = ws.cell(row=row_idx, column=link_col_idx)
+                    if cell.value and isinstance(cell.value, str) and cell.value.startswith('http'):
+                        # Create hyperlink
+                        cell.hyperlink = cell.value
+                        cell.style = "Hyperlink"
+            
+            # Auto-adjust column widths
+            for column in ws.columns:
+                max_length = 0
+                column_letter = column[0].column_letter
+                for cell in column:
+                    try:
+                        if len(str(cell.value)) > max_length:
+                            max_length = len(str(cell.value))
+                    except:
+                        pass
+                adjusted_width = min(max_length + 2, 50)  # Cap at 50 characters
+                ws.column_dimensions[column_letter].width = adjusted_width
+            
+            # Save the formatted workbook
+            wb.save(filename)
+            wb.close()
+            
+        except ImportError:
+            # Fallback to basic pandas export if openpyxl is not available
+            logging.warning("openpyxl not available, using basic Excel export")
+            df.to_excel(filename, index=False)
+        except Exception as e:
+            logging.error(f"Error formatting Excel file {filename}: {e}")
+            # Fallback to basic pandas export
+            df.to_excel(filename, index=False)
     
     def run(self) -> None:
         """
