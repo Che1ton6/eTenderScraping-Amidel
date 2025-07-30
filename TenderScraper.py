@@ -265,7 +265,6 @@ class TenderScraper:
                 "IS_THERE_A_BRIEFING_SESSION": self.getValueByLabel("Is there a briefing session?"),
                 "BRIEFING_DATE": "",
                 "COMPULSORY_BRIEFING": self.getValueByLabel("Is it compulsory?"),
-                "LINK": "",
                 "SOE": "",
                 "COST_OF_SALES_ESTIMATE": "",
                 "CAPABILITY_AVAILABLE": "",
@@ -285,7 +284,14 @@ class TenderScraper:
             
             # Extract document links
             docLinks = self.extractDocumentLinks()
-            tenderInfo["LINK"] = docLinks[0] if docLinks else ""
+            
+            # Initialize all document link columns with "N/A"
+            for i in range(1, 6):
+                tenderInfo[f"DOC_LINK_{i}"] = "N/A"
+            
+            # Populate available document links (up to 5)
+            for i, link in enumerate(docLinks[:5], 1):
+                tenderInfo[f"DOC_LINK_{i}"] = link
             
             # Check for duplicates
             if self.utils.isDuplicate(tenderInfo, self.processedTenders):
@@ -425,7 +431,8 @@ class TenderScraper:
             "CLOSING_DATE", "CLOSING_TIME", "TENDER_TYPE", "TENDER_DESCRIPTION",
             "TENDER_SOURCE", "DEPARTMENT", "PROVINCE",
             "ESUBMISSION", "CATEGORY", "IS_THERE_A_BRIEFING_SESSION",
-            "BRIEFING_DATE", "COMPULSORY_BRIEFING", "BRIEFING_SESSION_VENUE", "LINK", "SOE",
+            "BRIEFING_DATE", "COMPULSORY_BRIEFING", "BRIEFING_SESSION_VENUE", 
+            "DOC_LINK_1", "DOC_LINK_2", "DOC_LINK_3", "DOC_LINK_4", "DOC_LINK_5", "SOE",
             "COST_OF_SALES_ESTIMATE", "CAPABILITY_AVAILABLE", "CAPABILITY_GROUP", "REQUIREMENTS"
         ]
         
@@ -538,17 +545,18 @@ class TenderScraper:
                             # If date parsing fails, keep as string
                             pass
             
-            # Handle hyperlinks in LINK column
-            link_col_idx = None
-            if 'LINK' in df.columns:
-                link_col_idx = df.columns.get_loc('LINK') + 1
-                
-                for row_idx in range(2, len(df) + 2):  # Start from row 2 (skip header)
-                    cell = ws.cell(row=row_idx, column=link_col_idx)
-                    if cell.value and isinstance(cell.value, str) and cell.value.startswith('http'):
-                        # Create hyperlink
-                        cell.hyperlink = cell.value
-                        cell.style = "Hyperlink"
+            # Handle hyperlinks in document link columns
+            doc_link_columns = ['DOC_LINK_1', 'DOC_LINK_2', 'DOC_LINK_3', 'DOC_LINK_4', 'DOC_LINK_5']
+            for col_name in doc_link_columns:
+                if col_name in df.columns:
+                    link_col_idx = df.columns.get_loc(col_name) + 1
+                    
+                    for row_idx in range(2, len(df) + 2):  # Start from row 2 (skip header)
+                        cell = ws.cell(row=row_idx, column=link_col_idx)
+                        if cell.value and isinstance(cell.value, str) and cell.value.startswith('http'):
+                            # Create hyperlink
+                            cell.hyperlink = cell.value
+                            cell.style = "Hyperlink"
             
             # Auto-adjust column widths
             for column in ws.columns:
