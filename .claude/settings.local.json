@@ -1,0 +1,26 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(.venv\\\\Scripts\\\\python.exe -m pip install \"rich>=13.0.0\" --quiet)",
+      "Bash(ls \"C:\\\\Users\\\\CheltonGraham\\\\OneDrive - Amidel \\(Pty\\) Ltd\\\\Documents\\\\Sales\\\\Sales Auto Hub\\\\Scraping and Reports\\\\ICT & RFQ\\\\End Products\\\\May\")",
+      "Read(//c/Users/CheltonGraham/OneDrive - Amidel \\(Pty\\) Ltd/Documents/Sales/Sales Auto Hub/Scraping and Reports/ICT & RFQ/End Products/May/**)",
+      "Bash(ls \"C:\\\\Users\\\\CheltonGraham\\\\OneDrive - Amidel \\(Pty\\) Ltd\\\\Documents\\\\Sales\\\\Sales Auto Hub\\\\Scraping and Reports\\\\ICT & RFQ\\\\Bhekis conditional Product\")",
+      "Read(//c/Users/CheltonGraham/OneDrive - Amidel \\(Pty\\) Ltd/Documents/Sales/Sales Auto Hub/Scraping and Reports/ICT & RFQ/Bhekis conditional Product/**)",
+      "Bash(python main.py)",
+      "Bash(pip install *)",
+      "PowerShell(Get-ChildItem -Recurse \"C:\\\\Users\\\\CheltonGraham\\\\Desktop\\\\eTenderScraping\\\\data\" | Select-Object FullName, @{N='KB';E={[math]::Round\\($_.Length/1KB,1\\)}})",
+      "PowerShell(Get-ChildItem -Recurse \"C:\\\\Users\\\\CheltonGraham\\\\Desktop\\\\eTenderScraping\\\\data\" | ForEach-Object { $_.FullName })",
+      "PowerShell(Select-String -Path \"C:\\\\Users\\\\CheltonGraham\\\\Desktop\\\\eTenderScraping\\\\logs\\\\scraper.log\" -Pattern \"05-16|05-17|No tenders|tenders found|dateFrom\" | Select-Object -Last 30 | ForEach-Object { $_.Line })",
+      "PowerShell(pip install pillow -q)",
+      "Bash(python -)",
+      "Bash(python -c ' *)",
+      "PowerShell(Get-ChildItem -Recurse \"C:\\\\Users\\\\CheltonGraham\\\\Desktop\\\\eTenderScraping\\\\data\\\\\\(T\\) 18-20 May 2026\" | ForEach-Object { $_.FullName })",
+      "Bash(.venv\\\\Scripts\\\\python.exe -c \"from TenderSummary import create_tender_summary; from BatchProcessor import write_tender_rows; print\\('imports OK'\\)\")",
+      "Bash(python -c \"import pptx; print\\(pptx.__version__\\)\")",
+      "Bash(python create_presentation.py)",
+      "PowerShell($f = \"c:\\\\Users\\\\CheltonGraham\\\\OneDrive - Amidel \\(Pty\\) Ltd\\\\Documents\\\\IDE Projects\\\\eTenderScraping\\\\Amidel_eTender_Scraper_Presentation.pptx\"; $kb = [math]::Round\\(\\(Get-Item $f\\).Length / 1024\\); Write-Host \"$kb KB\")",
+      "PowerShell(Get-ChildItem \"c:\\\\Users\\\\CheltonGraham\\\\OneDrive - Amidel \\(Pty\\) Ltd\\\\Documents\\\\IDE Projects\\\\eTenderScraping\\\\data\" -ErrorAction SilentlyContinue | ForEach-Object { Write-Host $_.Name; Get-ChildItem $_.FullName -Recurse | ForEach-Object { Write-Host \"  \" $_.FullName } })",
+      "Bash(start \"\" \"c:\\\\Users\\\\CheltonGraham\\\\OneDrive - Amidel \\(Pty\\) Ltd\\\\Documents\\\\IDE Projects\\\\eTenderScraping\\\\Amidel_eTender_Scraper_Presentation.pptx\")"
+    ]
+  }
+}

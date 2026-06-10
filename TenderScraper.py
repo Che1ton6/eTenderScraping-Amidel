@@ -28,23 +28,23 @@ class TenderScraper:
     data extraction, error handling, duplicate prevention, and result export.
     """
     
-    def __init__(self, configPath: str = "config.json"):
+    def __init__(self, configPath: str = "config.json", log_queue=None):
         """
         Initialize the TenderScraper with configuration.
-        
+
         Args:
             configPath (str): Path to the configuration file
+            log_queue: Optional queue.Queue for routing log messages to a GUI
         """
         # Setup logging first (before ConfigManager which tries to log)
-        self.setupLogging(configPath)
+        self.setupLogging(configPath, log_queue=log_queue)
         
         self.configManager = ConfigManager(configPath)
         self.utils = Utils()
         self.driver = None
         self.tenderData = []
         self.processedTenders = set()  # Track processed tenders to prevent duplicates
-        self.reportDate = datetime.now().strftime("%Y/%m/%d")
-        
+
         # Get configuration
         # These could be simplified to direct access: self.configManager.config.get('scraping', {})
         # But using getter methods for possible future improvements.
@@ -53,33 +53,54 @@ class TenderScraper:
         self.timingConfig = self.configManager.getTimingConfig()
         self.retryConfig = self.configManager.getRetryConfig()
         self.outputConfig = self.configManager.getOutputConfig()
+
+        date_from = self.scrapingConfig.get("dateFrom", datetime.now().strftime("%Y-%m-%d"))
+        self.reportDate = date_from.replace("-", "/")
         
         logging.info("TenderScraper initialized successfully")
     
-    def setupLogging(self, configPath: str) -> None:
+    def setupLogging(self, configPath: str, log_queue=None) -> None:
         """
         Setup logging configuration for the scraper.
-        
+
         Args:
             configPath (str): Path to the configuration file
+            log_queue: Optional queue.Queue; when supplied, routes console logs to a GUI
         """
-        # Load config temporarily to get logging settings
         try:
             with open(configPath, 'r') as file:
                 config = json.load(file)
             loggingConfig = config.get('logging', {})
         except Exception:
-            # Fallback to default logging config
             loggingConfig = {'level': 'INFO', 'file': 'logs/scraper.log'}
-        
-        logging.basicConfig(
-            level=getattr(logging, loggingConfig.get('level', 'INFO')),
-            format='%(asctime)s - %(levelname)s - %(message)s',
-            handlers=[
-                logging.FileHandler(loggingConfig.get('file', 'logs/scraper.log')),
-                logging.StreamHandler()
-            ]
-        )
+
+        log_file = loggingConfig.get('file', 'logs/scraper.log')
+        os.makedirs(os.path.dirname(log_file) or '.', exist_ok=True)
+
+        root_logger = logging.getLogger()
+        root_logger.handlers.clear()
+        root_logger.setLevel(getattr(logging, loggingConfig.get('level', 'INFO')))
+        root_logger.addHandler(logging.FileHandler(log_file))
+
+        if log_queue is not None:
+            import queue as _queue
+            class _QueueHandler(logging.Handler):
+                def __init__(self, q):
+                    super().__init__()
+                    self.q = q
+                def emit(self, record):
+                    self.q.put(self.format(record))
+
+            qh = _QueueHandler(log_queue)
+            qh.setFormatter(logging.Formatter("%(asctime)s  %(levelname)-8s  %(message)s",
+                                              datefmt="%H:%M:%S"))
+            root_logger.addHandler(qh)
+        else:
+            try:
+                from rich.logging import RichHandler
+                root_logger.addHandler(RichHandler(show_path=False, rich_tracebacks=True))
+            except ImportError:
+                root_logger.addHandler(logging.StreamHandler())
     
     def setupBrowser(self) -> None:
         """
@@ -107,19 +128,41 @@ class TenderScraper:
         self.driver = webdriver.Chrome(options=chromeOptions)
         logging.info("Browser setup completed")
     
+    def waitForTableData(self) -> bool:
+        """
+        Wait until the DataTable has rendered actual data rows (not just a loading spinner).
+        Returns True when rows are ready, False on timeout.
+        """
+        timeout = self.timingConfig.get('tableLoadTimeout', 45)
+        try:
+            WebDriverWait(self.driver, timeout).until(
+                lambda d: any(
+                    not r.get_attribute("innerHTML").startswith('<td colspan')
+                    for r in d.find_elements(By.XPATH, "//table[contains(@class,'dataTable')]/tbody/tr")
+                )
+            )
+            return True
+        except TimeoutException:
+            logging.warning(f"DataTable did not load within {timeout}s — proceeding anyway")
+            return False
+
     def navigateToPage(self) -> None:
         """
         Navigate to the eTenders opportunities page and wait for it to load.
         """
         url = self.scrapingConfig.get('url')
         logging.info(f"Navigating to: {url}")
-        
+
         self.driver.get(url)
+        # Brief sleep for page HTML/JS to initialise before waiting on the DataTable.
         time.sleep(self.timingConfig.get('pageLoadWait', 7))
-        
+
         # Remove any modal popups
         self.removeModalPopups()
-        
+
+        # Wait until the DataTable has actual rows, not just a loading spinner.
+        self.waitForTableData()
+
         logging.info("Page loaded successfully")
     
     def removeModalPopups(self) -> None:
@@ -222,8 +265,7 @@ class TenderScraper:
             
             if not (dateFrom <= advertisedDt <= dateTo):
                 if advertisedDt < dateFrom:
-                    logging.info(f"Reached tenders older than date range, stopping")
-                    return "STOP_SCRAPING"
+                    return "TOO_OLD"
                 return False
             
             # Process e-submission status
@@ -339,77 +381,98 @@ class TenderScraper:
             bool: True if should continue to next page, False if should stop
         """
         logging.info(f"--- Scraping page {pageNum} ---")
-        
+
         rowIndex = 0
         maxRetries = self.retryConfig.get('maxRetries', 3)
-        
+        found_in_range = False
+        found_too_old = False
+
         while True:
-            # Always refetch rows to avoid stale element issues
             try:
                 rows = self.driver.find_elements(By.XPATH, "//table[contains(@class, 'dataTable')]/tbody/tr")
                 mainRows = [row for row in rows if not row.get_attribute("innerHTML").startswith('<td colspan')]
-                
+
                 if rowIndex >= len(mainRows):
                     break
-                
-                # Process row with retry logic
+
                 retryCount = 0
                 while retryCount <= maxRetries:
                     try:
                         result = self.processTenderRow(mainRows[rowIndex], rowIndex, pageNum)
-                        
-                        if result == "STOP_SCRAPING":
-                            return False
+
+                        if result == "TOO_OLD":
+                            found_too_old = True
+                            break  # Skip row, keep processing rest of page
                         elif result:
-                            break  # Success, move to next row
+                            found_in_range = True
+                            break
                         else:
-                            break  # Failed but not retryable
-                            
+                            break  # Too new or other — skip, keep processing
+
                     except StaleElementReferenceException:
                         retryCount += 1
                         if retryCount <= maxRetries:
                             logging.warning(f"Stale element on row {rowIndex + 1}, page {pageNum}. Retrying ({retryCount}/{maxRetries})...")
                             time.sleep(self.timingConfig.get('retryDelay', 2.5))
-                            # Refetch rows after stale element
                             rows = self.driver.find_elements(By.XPATH, "//table[contains(@class, 'dataTable')]/tbody/tr")
                             mainRows = [row for row in rows if not row.get_attribute("innerHTML").startswith('<td colspan')]
                             continue
                         else:
                             logging.error(f"Failed row {rowIndex + 1} after {maxRetries} retries. Skipping.")
                             break
-                
+
                 rowIndex += 1
-                
+
             except Exception as e:
                 logging.error(f"Error processing page {pageNum}: {e}")
                 break
-        
-        return True
+
+        # Continue if we found in-range tenders, or if no too-old tenders yet (still in future dates).
+        # Stop only when the page is entirely older than our date range.
+        if found_in_range:
+            return True
+        if found_too_old:
+            logging.info("Page contained tenders older than date range — stopping pagination")
+            return False
+        return True  # Page was all too-new — keep paginating toward older dates
     
     def goToNextPage(self) -> bool:
         """
         Navigate to the next page of results.
-        
+
         Returns:
             bool: True if successfully moved to next page, False if no more pages
         """
-        try:
-            nextBtn = self.driver.find_element(By.ID, "tendeList_next")
-            
-            if "disabled" in nextBtn.get_attribute("class"):
-                logging.info("Next button is disabled, no more pages")
+        maxRetries = self.retryConfig.get('maxRetries', 3)
+
+        for attempt in range(maxRetries):
+            try:
+                nextBtn = self.driver.find_element(By.ID, "tendeList_next")
+
+                if "disabled" in nextBtn.get_attribute("class"):
+                    logging.info("Next button is disabled, no more pages")
+                    return False
+
+                nextBtn.click()
+                time.sleep(self.timingConfig.get('nextPageWait', 3))
+                self.waitForTableData()
+                return True
+
+            except StaleElementReferenceException:
+                if attempt < maxRetries - 1:
+                    logging.warning(f"Next button stale, retrying ({attempt + 1}/{maxRetries})...")
+                    time.sleep(1)
+                    continue
+                logging.error("Next button stale after all retries, stopping pagination")
                 return False
-            
-            nextBtn.click()
-            time.sleep(self.timingConfig.get('nextPageWait', 4))
-            return True
-            
-        except NoSuchElementException:
-            logging.info("Next button not found, no more pages")
-            return False
-        except Exception as e:
-            logging.error(f"Error navigating to next page: {e}")
-            return False
+            except NoSuchElementException:
+                logging.info("Next button not found, no more pages")
+                return False
+            except Exception as e:
+                logging.error(f"Error navigating to next page: {e}")
+                return False
+
+        return False
     
     def exportToExcel(self) -> None:
         """
@@ -576,33 +639,34 @@ class TenderScraper:
             # Fallback to basic pandas export
             df.to_excel(filename, index=False)
     
-    def run(self) -> None:
+    def run(self, export=True) -> None:
         """
         Run the complete scraping process.
         """
         try:
             logging.info("Starting tender scraping process")
-            
+
             # Setup browser
             self.setupBrowser()
-            
+
             # Navigate to page
             self.navigateToPage()
-            
+
             # Scrape all pages
             pageNum = 1
             while True:
                 shouldContinue = self.scrapePage(pageNum)
                 if not shouldContinue:
                     break
-                
+
                 if not self.goToNextPage():
                     break
-                
+
                 pageNum += 1
-            
+
             # Export results
-            self.exportToExcel()
+            if export:
+                self.exportToExcel()
             
             logging.info("Scraping process completed successfully")
             

@@ -1,35 +1,41 @@
-# eTenders Scraper
+# Amidel eTender Scraper
 
-Web scraper for extracting tender data from the South African eTenders website (etenders.gov.za).
+Web scraper for extracting tender data from the South African eTenders website (etenders.gov.za), built for Amidel (Pty) Ltd.
 
-**Version:** 1.0.0
+**Version:** 2.0.0
 
 ## Features
 
-- **Error Handling**: Retry logic for stale elements and network issues
-- **Duplicate Prevention**: Automatic detection and filtering of duplicate tenders
-- **Configurable**: Configuration through JSON file
-- **Logging**: Detailed logging for debugging and monitoring
-- **Data Validation**: Automatic validation and cleaning of scraped data
-- **Dual Output**: Generates both date-specific and cumulative Excel files
-
+- **Amidel-branded GUI**: Navy and orange themed desktop application — no command-line required
+- **Batch week picker**: Calendar popup that automatically highlights the correct Mon–Wed (Thursday batch) or Thu–Sun (Monday batch) range when you click any date in the week
+- **Batch folder structure**: Organises all output into a dated batch folder with three subfolders — `batches/`, `end product/`, and `Display Equation/`
+- **Per-day Excel files**: Each scraped day is saved individually inside `batches/`
+- **End product file**: Combined `RFQ_and_ICT_Checker` workbook with a `Tender Data` tab and a `Final` tab containing source-level COUNTIF formulas
+- **Equation file management**: Automatically inserts the new batch at the left of `RFQ_and_ICT_Equation.xlsx`, shifts older batches right, enforces a maximum of 6 batches, and copies the updated file into the `Display Equation/` subfolder
+- **Error handling**: Retry logic for stale elements and network issues
+- **Duplicate prevention**: Automatic detection and filtering of duplicate tenders
+- **Live logging**: Log output streamed to the GUI and written to `logs/scraper.log`
 
 ## Project Structure
 
 ```
-EtenderScraping/
-├── TenderScraper.py         # Main scraper class
-├── Utils.py                 # Utility functions
+eTenderScraping/
+├── main.py                  # GUI entry point (tkinter, Amidel-branded)
+├── TenderScraper.py         # Selenium scraper class
+├── BatchProcessor.py        # Batch folder creation, Excel output, equation file update
 ├── ConfigManager.py         # Configuration management
-├── config.json              # Configuration settings
-├── main.py                  # Entry point
+├── Utils.py                 # Utility functions
+├── config.json              # Scraper configuration
+├── amidel.ico               # Application icon
 ├── requirements.txt         # Python dependencies
-├── README.md               # This file
-├── data/                   # Output Excel files
-│   ├── tenders_*.xlsx      # Date-specific tender data
-│   └── master_tenders.xlsx # Master file with all tenders
-└── logs/                   # Log files
-    └── scraper.log         # Scraping logs
+├── README.md                # This file
+├── data/                    # Batch output folders
+│   └── (T) 18-20 May 2026/ # Example batch folder
+│       ├── batches/         # Per-day Excel files (tenders_YYYY_MM_DD.xlsx)
+│       ├── end product/     # Combined RFQ_and_ICT_Checker workbook
+│       └── Display Equation/# Copy of the updated equation file
+└── logs/
+    └── scraper.log
 ```
 
 ## Installation
@@ -37,23 +43,47 @@ EtenderScraping/
 1. **Clone or download the project files**
 
 2. **Install Python dependencies:**
-   ```bash
+   ```powershell
    pip install -r requirements.txt
    ```
 
-3. **Install Chrome WebDriver:**
-   - Download ChromeDriver from: https://chromedriver.chromium.org/
-   - Ensure it's in your system PATH or in the project directory
+3. **Chrome** must be installed — ChromeDriver is managed automatically by Selenium.
+
+## Usage
+
+Run the application:
+
+```powershell
+python main.py
+```
+
+### Picking a batch
+
+1. Select **T** (Thursday batch — Mon to Wed) or **M** (Monday batch — Thu to Sun) using the toggle buttons.
+2. Click **Pick Week** to open the calendar.
+3. Click any date within the target week — the calendar will automatically highlight the full batch range.
+4. Click **Confirm** to lock in the selection, then **Run Scraper**.
+
+Chrome will open automatically and scrape each day in the range one at a time. When complete, the screen switches to a summary showing how many tenders were found.
+
+### Output produced per run
+
+| Location | File |
+|----------|------|
+| `data/(T) DD-DD Mon YYYY/batches/` | `tenders_YYYY_MM_DD.xlsx` for each scraped day |
+| `data/(T) DD-DD Mon YYYY/end product/` | `RFQ_and_ICT_Checker_(DD - DD Month).xlsx` |
+| `data/(T) DD-DD Mon YYYY/Display Equation/` | Updated copy of `RFQ_and_ICT_Equation.xlsx` |
+| OneDrive (original) | `RFQ_and_ICT_Equation.xlsx` updated in-place |
 
 ## Configuration
 
-Edit `config.json` to customize the scraper:
+`config.json` controls scraper behaviour. Dates are set automatically by the GUI.
 
 ```json
 {
     "scraping": {
-        "dateFrom": "2025-06-25",
-        "dateTo": "2025-06-30",
+        "dateFrom": "2026-05-19",
+        "dateTo": "2026-05-19",
         "url": "https://www.etenders.gov.za/Home/opportunities"
     },
     "browser": {
@@ -65,10 +95,10 @@ Edit `config.json` to customize the scraper:
     "timing": {
         "pageLoadWait": 7,
         "modalRemovalWait": 1,
-        "expandRowWait": 3,
-        "collapseRowWait": 2,
-        "nextPageWait": 4,
-        "retryDelay": 2.5
+        "expandRowWait": 2,
+        "collapseRowWait": 1,
+        "nextPageWait": 3,
+        "retryDelay": 2
     },
     "retry": {
         "maxRetries": 3,
@@ -86,46 +116,33 @@ Edit `config.json` to customize the scraper:
 }
 ```
 
-### Configuration Options
+### Timing — Important Note
 
-- **dateFrom/dateTo**: Date range for scraping (YYYY-MM-DD format)
-- **headless**: Run browser in headless mode (no visible window)
-- **maxRetries**: Number of retry attempts for failed operations
-- **pageLoadWait**: Time to wait for page loading (seconds)
+> **Do not reduce `pageLoadWait` below `7`.**
+>
+> The eTenders website uses a jQuery DataTable that requires ~7 seconds to fully initialise and render pagination buttons. Setting this lower causes the scraper to see only a single page of results with no pagination, returning 0 tenders.
 
-## Usage
+The other timing values (`expandRowWait`, `collapseRowWait`, `nextPageWait`) are safe to reduce if you want faster scraping.
 
-### Basic Usage
+## Equation File
 
-Run the scraper with default configuration:
+The equation file (`RFQ_and_ICT_Equation.xlsx`) tracks NNT / ICT / RFQ counts across up to **6 batches**:
 
-```bash
-python main.py
-```
+- Each new batch is inserted at **column B** (left of existing data), pushing older batches right.
+- Once a 7th batch would be added, the oldest (rightmost) batch is automatically removed.
+- After every update the file is copied to the current batch's `Display Equation/` folder.
+- Thin borders are applied to the full data range on every save.
 
-### Custom Configuration
+The equation file must be **closed in Excel** before running the scraper, otherwise the save will fail with a permission error.
 
-1. Edit `config.json` with your desired settings
-2. Run the scraper:
-   ```bash
-   python main.py
-   ```
-
-## Output Files
-
-The scraper generates two Excel files in the `data/` folder:
-
-1. **Date-specific file**: `data/tenders_30_06_2025.xlsx` (tenders for specific date only)
-2. **Master file**: `data/master_tenders.xlsx` (all tenders combined, with duplicate prevention)
-
-### Excel Column Structure
+## Excel Columns (Tender Data)
 
 | Column | Description |
 |--------|-------------|
-| REPORT_DATE | Date when scraper was run |
-| RECORD_ID | Auto-incrementing ID |
+| REPORT_DATE | Date the scraper was run |
+| RECORD_ID | Auto-assigned ID (highest = first scraped) |
 | TENDER_ID | Tender number |
-| PUBLICATION_DATE | When tender was published |
+| PUBLICATION_DATE | When the tender was published |
 | CLOSING_DATE | Closing date |
 | CLOSING_TIME | Closing time |
 | TENDER_TYPE | Type of tender |
@@ -133,142 +150,39 @@ The scraper generates two Excel files in the `data/` folder:
 | TENDER_SOURCE | Always "ETENDERS.GOV.ZA" |
 | DEPARTMENT | Organ of state |
 | PROVINCE | Province |
-| ESUBMISSION | E-submission status |
+| ESUBMISSION | E-submission available |
 | CATEGORY | Tender category |
 | IS_THERE_A_BRIEFING_SESSION | Briefing session status |
 | BRIEFING_DATE | Briefing date |
-| COMPULSORY_BRIEFING | Compulsory status |
+| COMPULSORY_BRIEFING | Whether briefing is compulsory |
 | BRIEFING_SESSION_VENUE | Briefing venue |
-| LINK | Document link |
-| SOE | State-owned enterprise |
+| LINK | Document download link (clickable hyperlink) |
+| SOE | State-owned enterprise flag |
 | COST_OF_SALES_ESTIMATE | Cost estimate |
 | CAPABILITY_AVAILABLE | Capability status |
 | CAPABILITY_GROUP | Capability group |
 | REQUIREMENTS | Requirements |
 
-## Logging
-
-The scraper creates detailed logs in `logs/scraper.log` including:
-- Scraping progress
-- Error messages
-- Performance metrics
-- Data validation results
-
-## Error Handling
-
-The scraper includes robust error handling for:
-- **Stale Elements**: Automatic retry with element refetching
-- **Network Issues**: Retry logic for failed requests
-- **Invalid Data**: Validation and cleaning of scraped data
-- **Browser Crashes**: Graceful cleanup and recovery
-
 ## Troubleshooting
 
-### Common Issues
+### 0 tenders scraped
+- The most common cause is `pageLoadWait` being too low — ensure it is set to `7`.
+- Check `logs/scraper.log` for detail on what dates were found.
 
-1. **ChromeDriver not found**
-   - Ensure ChromeDriver is installed and in PATH
-   - Or place ChromeDriver in the project directory
+### Missing days in the batches folder
+- If no tenders were published on a given date, the eTenders site returns nothing and no file is created for that day. This is expected behaviour.
 
-2. **Configuration errors**
-   - Check `config.json` format and required fields
-   - Ensure date format is YYYY-MM-DD
+### Equation file permission error
+- Close `RFQ_and_ICT_Equation.xlsx` in Excel before running the scraper.
 
-3. **No data scraped**
-   - Verify date range in configuration
-   - Check if website structure has changed
-   - Review log file for error messages
+### ChromeDriver errors
+- Ensure Google Chrome is installed. Selenium manages ChromeDriver automatically.
 
-4. **Slow performance**
-   - Reduce wait times in configuration
-   - Enable headless mode
-   - Check internet connection
-
-### Debug Mode
-
-Enable debug logging by changing the log level in `config.json`:
-
+### Debug mode
 ```json
-{
-    "logging": {
-        "level": "DEBUG",
-        "file": "logs/scraper.log"
-    }
-}
+"logging": { "level": "DEBUG", "file": "logs/scraper.log" }
 ```
-
-## Development
-
-### Recent Refactoring (Latest Session)
-- **Utils.py improvements**: Removed unnecessary methods (`getCurrentDate`, `formatDateForFilename`, `__init__`)
-- **Enhanced validation**: Added `TENDER_ID` and `CLOSING_DATE` as required fields in `validateTenderData()`
-- **Better documentation**: Added comprehensive class-level comments explaining stateless nature
-- **All changes tested**: Successfully verified with `main.py`
-
-### Next Session Goals
-- Explore `TenderScraper.py` browser automation and error handling
-- Analyze data extraction patterns and web scraping techniques
-- Investigate performance optimization opportunities
-- Review error handling strategies and retry mechanisms
-
-### Session Notes
-See `SESSION_NOTES.md` for detailed session history, learning outcomes, and development progress.
-
-### Project Structure
-
-The project follows a clean, modular structure:
-
-- **`main.py`**: Entry point script with proper error handling
-- **`TenderScraper.py`**: Main scraper class implementing OOP principles
-- **`Utils.py`**: Utility functions for data processing and validation
-- **`config/`**: Configuration package containing settings and management
-- **`data/`**: Output directory for Excel files
-- **`logs/`**: Application logs
-
-### Code Quality
-
-- **Object-Oriented Design**: Proper class structure with clear separation of concerns
-- **Error Handling**: Comprehensive exception handling and logging
-- **Configuration Management**: Centralized configuration with validation
-- **Data Validation**: Input validation and data cleaning
-- **Documentation**: Comprehensive docstrings and comments
-
-## Contributing
-
-1. Fork the repository
-2. Create a feature branch (`git checkout -b feature/amazing-feature`)
-3. Commit your changes (`git commit -m 'Add some amazing feature'`)
-4. Push to the branch (`git push origin feature/amazing-feature`)
-5. Open a Pull Request
-
-### Development Guidelines
-
-- Follow PEP 8 style guidelines
-- Add comprehensive docstrings for all functions and classes
-- Include error handling for all external operations
-- Write unit tests for new functionality
-- Update documentation for any configuration changes
-
-### Code Standards
-
-- **File/Class Names**: CamelCase (e.g., `TenderScraper.py`, `class TenderScraper`)
-- **Method Names**: camelCase (e.g., `parseDate()`, `loadConfig()`)
-- **Documentation**: Comprehensive docstrings for all classes and methods
-
-### Adding Features
-
-1. Follow the established naming conventions
-2. Add proper error handling
-3. Include logging for debugging
-4. Update this README with new features
 
 ## License
 
-This project is for educational and business use. Please respect the website's terms of service.
-
-## Support
-
-For issues and questions:
-1. Check the log file for detailed error information
-2. Review the troubleshooting section
-3. Ensure all dependencies are properly installed 
+For internal business use by Amidel (Pty) Ltd. Please respect the eTenders website's terms of service.

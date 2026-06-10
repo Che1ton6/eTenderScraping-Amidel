@@ -68,6 +68,7 @@ class ConfigManager:
         # Validate numeric values
         numericFields = [
             ('timing', 'pageLoadWait'),
+            ('timing', 'tableLoadTimeout'),
             ('timing', 'modalRemovalWait'),
             ('timing', 'expandRowWait'),
             ('timing', 'collapseRowWait'),

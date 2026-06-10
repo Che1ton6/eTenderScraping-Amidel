@@ -1,7 +1,7 @@
 {
     "scraping": {
-        "dateFrom": "2025-07-10",
-        "dateTo": "2025-07-10",
+        "dateFrom": "2026-05-24",
+        "dateTo": "2026-05-24",
         "url": "https://www.etenders.gov.za/Home/opportunities"
     },
     "browser": {
@@ -13,10 +13,10 @@
     "timing": {
         "pageLoadWait": 7,
         "modalRemovalWait": 1,
-        "expandRowWait": 3,
-        "collapseRowWait": 2,
-        "nextPageWait": 4,
-        "retryDelay": 2.5
+        "expandRowWait": 2,
+        "collapseRowWait": 1,
+        "nextPageWait": 3,
+        "retryDelay": 2
     },
     "retry": {
         "maxRetries": 3,
@@ -31,4 +31,4 @@
         "level": "INFO",
         "file": "logs/scraper.log"
     }
-} 
+}

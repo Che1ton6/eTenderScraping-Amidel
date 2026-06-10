@@ -55,7 +55,10 @@ class Utils:
         """
         if not dateStr or not isinstance(dateStr, str):
             return ""
-        
+
+        if dateStr.strip().upper() in ("N/A", "NA", "-", "NONE", "TBC"):
+            return ""
+
         # Pattern to match "Sunday, 15 June 2025"
         pattern = r"(\d{1,2})\s+(\w+)\s+(\d{4})"
         match = re.search(pattern, dateStr)
