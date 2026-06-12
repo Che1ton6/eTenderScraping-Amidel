@@ -20,7 +20,24 @@
       "Bash(python create_presentation.py)",
       "PowerShell($f = \"c:\\\\Users\\\\CheltonGraham\\\\OneDrive - Amidel \\(Pty\\) Ltd\\\\Documents\\\\IDE Projects\\\\eTenderScraping\\\\Amidel_eTender_Scraper_Presentation.pptx\"; $kb = [math]::Round\\(\\(Get-Item $f\\).Length / 1024\\); Write-Host \"$kb KB\")",
       "PowerShell(Get-ChildItem \"c:\\\\Users\\\\CheltonGraham\\\\OneDrive - Amidel \\(Pty\\) Ltd\\\\Documents\\\\IDE Projects\\\\eTenderScraping\\\\data\" -ErrorAction SilentlyContinue | ForEach-Object { Write-Host $_.Name; Get-ChildItem $_.FullName -Recurse | ForEach-Object { Write-Host \"  \" $_.FullName } })",
-      "Bash(start \"\" \"c:\\\\Users\\\\CheltonGraham\\\\OneDrive - Amidel \\(Pty\\) Ltd\\\\Documents\\\\IDE Projects\\\\eTenderScraping\\\\Amidel_eTender_Scraper_Presentation.pptx\")"
+      "Bash(start \"\" \"c:\\\\Users\\\\CheltonGraham\\\\OneDrive - Amidel \\(Pty\\) Ltd\\\\Documents\\\\IDE Projects\\\\eTenderScraping\\\\Amidel_eTender_Scraper_Presentation.pptx\")",
+      "Bash(start pythonw *)",
+      "Bash(start \"\" \"C:\\\\Users\\\\CheltonGraham\\\\OneDrive - Amidel \\(Pty\\) Ltd\\\\Documents\\\\Sales\\\\Sales Auto Hub\\\\Scraping and Reports\\\\ICT & RFQ\\\\Old Method\\\\Bhekis conditional Product\")",
+      "PowerShell(Start-Process explorer.exe -ArgumentList '\"C:\\\\Users\\\\CheltonGraham\\\\OneDrive - Amidel \\(Pty\\) Ltd\\\\Documents\\\\Sales\\\\Sales Auto Hub\\\\Scraping and Reports\\\\ICT & RFQ\\\\Old Method\\\\Bhekis conditional Product\"')",
+      "Bash(dir \"C:\\\\Users\\\\CheltonGraham\\\\OneDrive - Amidel \\(Pty\\) Ltd\\\\Documents\\\\Sales\\\\Sales Auto Hub\\\\Scraping and Reports\\\\ICT & RFQ\\\\Old Method\\\\Bhekis conditional Product\\\\eTender_PowerBI_Data.xlsx\")",
+      "PowerShell(explorer $path)",
+      "PowerShell($path = \"C:\\\\Users\\\\CheltonGraham\\\\OneDrive - Amidel \\(Pty\\) Ltd\\\\Documents\\\\Sales\\\\Sales Auto Hub\\\\Scraping and Reports\\\\ICT & RFQ\\\\Old Method\\\\Bhekis conditional Product\")",
+      "Bash(not exist *)",
+      "Bash(Get-Item \"c:\\\\Users\\\\CheltonGraham\\\\OneDrive - Amidel \\(Pty\\) Ltd\\\\Documents\\\\IDE Projects\\\\eTenderScraping\\\\logs\\\\scraper.log\")",
+      "Bash(Select-Object Length, LastWriteTime)",
+      "Bash(python audit_sources.py)",
+      "PowerShell(Start-Process explorer.exe \"C:\\\\eTenderData\")",
+      "PowerShell(Remove-Item \"C:\\\\eTenderData\\\\eTender_PowerBI_Data.csv\" -Confirm:$false)",
+      "PowerShell(python \"C:\\\\Users\\\\CheltonGraham\\\\OneDrive - Amidel \\(Pty\\) Ltd\\\\Documents\\\\IDE Projects\\\\eTenderScraping\\\\_reseed_powerbi.py\")",
+      "PowerShell(Start-Process python -ArgumentList \"main.py\" -WorkingDirectory \"C:\\\\Users\\\\CheltonGraham\\\\OneDrive - Amidel \\(Pty\\) Ltd\\\\Documents\\\\IDE Projects\\\\eTenderScraping\")",
+      "PowerShell(Start-Process pythonw -ArgumentList \"main.py\" -WorkingDirectory \"C:\\\\Users\\\\CheltonGraham\\\\OneDrive - Amidel \\(Pty\\) Ltd\\\\Documents\\\\IDE Projects\\\\eTenderScraping\")",
+      "PowerShell(Start-Process \"C:\\\\Users\\\\CheltonGraham\\\\OneDrive - Amidel \\(Pty\\) Ltd\\\\Documents\\\\IDE Projects\\\\eTenderScraping\\\\data\\\\\\(T\\) 25-27 May 2026\\\\batches\\\\tenders_2026_05_26.xlsx\")",
+      "PowerShell(Start-Process -FilePath \".\\\\.venv\\\\Scripts\\\\pythonw.exe\" -ArgumentList \"main.py\" -WorkingDirectory \".\" -WindowStyle Normal)"
     ]
   }
 }

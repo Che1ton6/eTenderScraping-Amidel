@@ -1,7 +1,7 @@
 {
     "scraping": {
-        "dateFrom": "2026-05-24",
-        "dateTo": "2026-05-24",
+        "dateFrom": "2026-06-09",
+        "dateTo": "2026-06-09",
         "url": "https://www.etenders.gov.za/Home/opportunities"
     },
     "browser": {
@@ -12,6 +12,7 @@
     },
     "timing": {
         "pageLoadWait": 7,
+        "tableLoadTimeout": 45,
         "modalRemovalWait": 1,
         "expandRowWait": 2,
         "collapseRowWait": 1,
