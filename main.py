@@ -14,7 +14,8 @@ from ConfigManager import ConfigManager
 from TenderScraper import TenderScraper
 from BatchProcessor import (create_batch_folder, save_daily_file,
                             create_end_product, update_equation_file,
-                            calculate_counts, update_power_bi_export)
+                            calculate_counts, update_power_bi_export,
+                            deduplicate_tenders)
 from TenderSummary import create_tender_summary
 
 # ── Amidel brand colours ──────────────────────────────────────────────────────
@@ -170,8 +171,8 @@ class App(tk.Tk):
         ).pack(pady=10)
 
     def _on_source_change(self):
-        is_etenders = self.source_var.get() == "etenders"
-        if is_etenders:
+        src = self.source_var.get()
+        if src in ("etenders", "watchlist"):
             self._lbl_batch_type.grid()
             self._radio_frame.grid()
             self._lbl_week.grid()
@@ -179,7 +180,7 @@ class App(tk.Tk):
             self._lbl_ecdpw_info.grid_remove()
             self._lbl_ecdpw_filter.grid_remove()
             self._ecdpw_filter_frame.grid_remove()
-        else:
+        else:  # ecdpw
             self._lbl_batch_type.grid_remove()
             self._radio_frame.grid_remove()
             self._lbl_week.grid_remove()
@@ -225,6 +226,8 @@ class App(tk.Tk):
         tk.Radiobutton(src_frame, text="eTenders", value="etenders",
                        **src_opts).pack(side="left")
         tk.Radiobutton(src_frame, text="EC DPW", value="ecdpw",
+                       **src_opts).pack(side="left", padx=(14, 0))
+        tk.Radiobutton(src_frame, text="(All) Watchlist Websites", value="watchlist",
                        **src_opts).pack(side="left", padx=(14, 0))
 
         # Batch type (eTenders only)
@@ -420,6 +423,11 @@ class App(tk.Tk):
             self.status_var.set("Scraping EC DPW tenders…")
             threading.Thread(target=self._run_ecdpw, args=(pub_date_from, filter_label),
                              daemon=True).start()
+        elif self.source_var.get() == "watchlist":
+            date_from, date_to = self._anchor_range()
+            self.status_var.set(f"Scraping Watchlist {date_from} → {date_to}…")
+            threading.Thread(target=self._run_watchlist, args=(date_from, date_to),
+                             daemon=True).start()
         else:
             date_from, date_to = self._anchor_range()
             self.status_var.set(f"Scraping {date_from} → {date_to}…")
@@ -460,30 +468,7 @@ class App(tk.Tk):
                         logging.error(f"Could not save daily file for {day}: {e}")
                     all_tenders.extend(scraper.tenderData)
 
-            # ── JPC ───────────────────────────────────────────────────────────
-            self.after(0, lambda: self.status_var.set("Scraping JPC tenders…"))
-            try:
-                from JPCScraper import JPCScraper
-                jpc = JPCScraper(date_from=date_from, date_to=date_to,
-                                 log_queue=self.log_queue)
-                jpc.run()
-                if jpc.tenderData:
-                    all_tenders.extend(jpc.tenderData)
-                    logging.info(f"JPC: added {len(jpc.tenderData)} tender(s)")
-            except Exception as e:
-                logging.error(f"JPC scraping error: {e}")
-
-            # ── Raymond Mhlaba ────────────────────────────────────────────────
-            self.after(0, lambda: self.status_var.set("Scraping Raymond Mhlaba tenders…"))
-            try:
-                from RaymondMhlabaScraper import RaymondMhlabaScraper
-                rm = RaymondMhlabaScraper(date_to=date_to, log_queue=self.log_queue)
-                rm.run()
-                if rm.tenderData:
-                    all_tenders.extend(rm.tenderData)
-                    logging.info(f"Raymond Mhlaba: added {len(rm.tenderData)} tender(s)")
-            except Exception as e:
-                logging.error(f"Raymond Mhlaba scraping error: {e}")
+            all_tenders = deduplicate_tenders(all_tenders)
 
             if all_tenders:
                 df = pd.DataFrame(all_tenders)
@@ -509,6 +494,158 @@ class App(tk.Tk):
 
         self.after(0, self._show_done, len(all_tenders), date_from, date_to,
                    end_product_path, equation_updated, summaries_count)
+
+    # ── Watchlist helpers ─────────────────────────────────────────────────────
+
+    _WATCHLIST_FILE = (
+        r"C:\Users\CheltonGraham\OneDrive - Amidel (Pty) Ltd"
+        r"\Desktop\Websites.xlsx"
+    )
+
+    def _load_watchlist(self) -> set:
+        """Return the set of source names from Websites.xlsx."""
+        import openpyxl
+        try:
+            wb = openpyxl.load_workbook(self._WATCHLIST_FILE)
+            ws = wb.active
+            skip = {"Source", "Report Date", None}
+            return {
+                str(row[0]).strip()
+                for row in ws.iter_rows(min_row=2, values_only=True)
+                if row[0] and str(row[0]).strip() not in skip
+            }
+        except Exception as e:
+            logging.warning(f"Could not load Websites.xlsx: {e}")
+            return set()
+
+    def _run_watchlist(self, date_from: str, date_to: str):
+        all_tenders      = []
+        end_product_path = None
+        equation_updated = False
+        summaries_count  = 0
+        batch_type       = self.batch_type_var.get()
+        report_date      = datetime.strptime(date_to, "%Y-%m-%d")
+        root_dir         = os.path.join("data", "watchlist")
+
+        start = datetime.strptime(date_from, "%Y-%m-%d")
+        end   = datetime.strptime(date_to,   "%Y-%m-%d")
+        days, current = [], start
+        while current <= end:
+            days.append(current.strftime("%Y-%m-%d"))
+            current += timedelta(days=1)
+
+        watchlist_sources = self._load_watchlist()
+
+        try:
+            batch_folder = create_batch_folder(date_from, date_to, batch_type,
+                                               root_dir=root_dir)
+
+            # ── eTenders (day-by-day) ─────────────────────────────────────────
+            for i, day in enumerate(days, 1):
+                self.after(0, lambda msg=f"eTenders: day {i}/{len(days)}: {day}…":
+                           self.status_var.set(msg))
+                cm = ConfigManager()
+                cm.updateConfig({"scraping": {"dateFrom": day, "dateTo": day}})
+                scraper = TenderScraper(log_queue=self.log_queue)
+                scraper.run(export=False)
+                if scraper.tenderData:
+                    try:
+                        save_daily_file(scraper.tenderData, day, batch_folder)
+                    except Exception as e:
+                        logging.error(f"Could not save daily file for {day}: {e}")
+                    all_tenders.extend(scraper.tenderData)
+
+            # ── EC DPW ────────────────────────────────────────────────────────
+            self.after(0, lambda: self.status_var.set("Scraping EC DPW tenders…"))
+            try:
+                from ECDPWScraper import ECDPWScraper
+                pub_from = datetime.strptime(date_from, "%Y-%m-%d").date()
+                ec = ECDPWScraper(log_queue=self.log_queue, pub_date_from=pub_from)
+                ec.run(status_callback=lambda msg: self.after(0, lambda m=msg: self.status_var.set(m)))
+                if ec.tenderData:
+                    all_tenders.extend(ec.tenderData)
+                    logging.info(f"EC DPW: added {len(ec.tenderData)} tender(s)")
+            except Exception as e:
+                logging.error(f"EC DPW scraping error: {e}")
+
+            # ── JPC ───────────────────────────────────────────────────────────
+            if "JPC" in watchlist_sources:
+                self.after(0, lambda: self.status_var.set("Scraping JPC tenders…"))
+                try:
+                    tenders = self._scrape_jpc(date_from, date_to)
+                    all_tenders.extend(tenders)
+                    logging.info(f"JPC: {len(tenders)} tender(s)")
+                except Exception as e:
+                    logging.error(f"JPC scraping error: {e}")
+
+            # ── Raymond Mhlaba ────────────────────────────────────────────────
+            if "Raymond Mhlaba LM" in watchlist_sources:
+                self.after(0, lambda: self.status_var.set("Scraping Raymond Mhlaba tenders…"))
+                try:
+                    tenders = self._scrape_raymond_mhlaba(date_from, date_to)
+                    all_tenders.extend(tenders)
+                    logging.info(f"Raymond Mhlaba: {len(tenders)} tender(s)")
+                except Exception as e:
+                    logging.error(f"Raymond Mhlaba scraping error: {e}")
+
+            # ── All other watchlist sites (static HTML) ───────────────────────
+            self.after(0, lambda: self.status_var.set("Scraping watchlist sites…"))
+            try:
+                from WatchlistScrapers import run_watchlist_scrapers
+                wl_tenders = run_watchlist_scrapers(
+                    date_from, date_to, watchlist_sources, self.log_queue
+                )
+                all_tenders.extend(wl_tenders)
+            except Exception as e:
+                logging.error(f"Watchlist scrapers error: {e}")
+
+            # ── Selenium-rendered watchlist sites ─────────────────────────────
+            self.after(0, lambda: self.status_var.set("Scraping JS-rendered watchlist sites…"))
+            try:
+                from SeleniumWatchlistScrapers import run_selenium_watchlist_scrapers
+                sel_tenders = run_selenium_watchlist_scrapers(
+                    date_from, date_to, watchlist_sources, self.log_queue
+                )
+                all_tenders.extend(sel_tenders)
+            except Exception as e:
+                logging.error(f"Selenium watchlist scrapers error: {e}")
+
+            all_tenders = deduplicate_tenders(all_tenders)
+
+            if all_tenders:
+                df = pd.DataFrame(all_tenders)
+                try:
+                    end_product_path = create_end_product(
+                        df, date_from, date_to, batch_type, report_date, batch_folder
+                    )
+                    counts = calculate_counts(df)
+                    update_equation_file(counts, batch_type, report_date, batch_folder)
+                    update_power_bi_export(batch_folder, date_from, date_to, batch_type)
+                    equation_updated = True
+                except Exception as e:
+                    logging.error(f"Watchlist batch processing error: {e}")
+
+                try:
+                    summaries_count = create_tender_summary(df, batch_folder)
+                except Exception as e:
+                    logging.error(f"Watchlist Tender Summary error: {e}")
+
+        except Exception as e:
+            self.after(0, self._on_error, str(e))
+            return
+
+        self.after(0, self._show_done, len(all_tenders), date_from, date_to,
+                   end_product_path, equation_updated, summaries_count)
+
+    def _scrape_jpc(self, date_from: str, date_to: str) -> list:
+        from JPCScraper import JPCScraper
+        s = JPCScraper(date_from=date_from, date_to=date_to, log_queue=self.log_queue)
+        return s.run()
+
+    def _scrape_raymond_mhlaba(self, date_from: str, date_to: str) -> list:
+        from RaymondMhlabaScraper import RaymondMhlabaScraper
+        s = RaymondMhlabaScraper(date_to=date_to, log_queue=self.log_queue)
+        return s.run()
 
     def _run_ecdpw(self, pub_date_from=None, filter_label=None):
         from ECDPWScraper import ECDPWScraper

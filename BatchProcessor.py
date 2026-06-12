@@ -74,12 +74,15 @@ HDR_FILL = PatternFill("solid", fgColor="1F4E79")
 
 # ── Folder structure ──────────────────────────────────────────────────────────
 
-def create_batch_folder(date_from: str, date_to: str, batch_type: str) -> str:
+def create_batch_folder(date_from: str, date_to: str, batch_type: str,
+                        root_dir: str = None) -> str:
     """
-    Create and return the root batch folder inside data/.
-    e.g. data/(T) 18-20 May 2026/
-         data/(M) 21-24 May 2026/
+    Create and return the root batch folder.
+    root_dir defaults to data/etenders.gov.za; pass data/watchlist for watchlist runs.
     """
+    if root_dir is None:
+        root_dir = os.path.join("data", "etenders.gov.za")
+
     start = datetime.strptime(date_from, "%Y-%m-%d")
     end   = datetime.strptime(date_to,   "%Y-%m-%d")
 
@@ -90,7 +93,7 @@ def create_batch_folder(date_from: str, date_to: str, batch_type: str) -> str:
                  f"-{end.strftime('%d %b %Y')}")
 
     import shutil
-    root = os.path.join("data", "etenders.gov.za", label)
+    root = os.path.join(root_dir, label)
     if os.path.exists(root):
         shutil.rmtree(root)
         logging.info(f"Existing batch folder removed for re-scrape: {root}")
@@ -220,6 +223,9 @@ def create_end_product(df: pd.DataFrame, date_from: str, date_to: str,
     filename = f"RFQ_and_ICT_Checker_({label}).xlsx"
     filepath = os.path.join(batch_folder, "end product", filename)
 
+    # Deduplicate across all sources before final output
+    df = pd.DataFrame(deduplicate_tenders(df.to_dict("records")))
+
     # Assign record IDs across the full combined dataset
     records = []
     total = len(df)
@@ -238,6 +244,30 @@ def create_end_product(df: pd.DataFrame, date_from: str, date_to: str,
     wb.save(filepath)
     logging.info(f"End product created: {filepath}")
     return filepath
+
+
+# ── Deduplication ────────────────────────────────────────────────────────────
+
+def deduplicate_tenders(tenders: list) -> list:
+    """
+    Remove duplicate tender entries by TENDER_ID (first occurrence wins).
+    Records with a blank/None TENDER_ID are always kept as-is.
+    """
+    seen: set = set()
+    out: list = []
+    dupes = 0
+    for t in tenders:
+        tid = str(t.get("TENDER_ID") or "").strip()
+        if tid and tid in seen:
+            dupes += 1
+            logging.info(f"Duplicate tender skipped: {tid}")
+            continue
+        out.append(t)
+        if tid:
+            seen.add(tid)
+    if dupes:
+        logging.info(f"Deduplication removed {dupes} duplicate tender(s)")
+    return out
 
 
 # ── Counting ──────────────────────────────────────────────────────────────────
