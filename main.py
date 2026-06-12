@@ -460,6 +460,31 @@ class App(tk.Tk):
                         logging.error(f"Could not save daily file for {day}: {e}")
                     all_tenders.extend(scraper.tenderData)
 
+            # ── JPC ───────────────────────────────────────────────────────────
+            self.after(0, lambda: self.status_var.set("Scraping JPC tenders…"))
+            try:
+                from JPCScraper import JPCScraper
+                jpc = JPCScraper(date_from=date_from, date_to=date_to,
+                                 log_queue=self.log_queue)
+                jpc.run()
+                if jpc.tenderData:
+                    all_tenders.extend(jpc.tenderData)
+                    logging.info(f"JPC: added {len(jpc.tenderData)} tender(s)")
+            except Exception as e:
+                logging.error(f"JPC scraping error: {e}")
+
+            # ── Raymond Mhlaba ────────────────────────────────────────────────
+            self.after(0, lambda: self.status_var.set("Scraping Raymond Mhlaba tenders…"))
+            try:
+                from RaymondMhlabaScraper import RaymondMhlabaScraper
+                rm = RaymondMhlabaScraper(date_to=date_to, log_queue=self.log_queue)
+                rm.run()
+                if rm.tenderData:
+                    all_tenders.extend(rm.tenderData)
+                    logging.info(f"Raymond Mhlaba: added {len(rm.tenderData)} tender(s)")
+            except Exception as e:
+                logging.error(f"Raymond Mhlaba scraping error: {e}")
+
             if all_tenders:
                 df = pd.DataFrame(all_tenders)
                 try:

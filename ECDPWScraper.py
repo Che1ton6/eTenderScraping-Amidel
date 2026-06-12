@@ -196,14 +196,60 @@ class ECDPWScraper:
         return date_str, time_str
 
     _TYPE_MAP = {
-        "QUOTATION REQUEST":    "Request for Quotation",
-        "REQUEST FOR QUOTATION":"Request for Quotation",
-        "BID REQUEST":          "Request for Bid",
-        "REQUEST FOR BID":      "Request for Bid",
-        "PROPOSAL REQUEST":     "Request for Proposal",
-        "REQUEST FOR PROPOSAL": "Request for Proposal",
-        "REQUEST FOR INFORMATION": "Request for Information",
+        "REQUEST FOR QUOTATION":    "Request for Quotation",
+        "QUOTATION REQUEST":        "Request for Quotation",
+        "PRICE QUOTATION":          "Request for Quotation",
+        "REQUEST FOR BID":          "Request for Bid",
+        "BID REQUEST":              "Request for Bid",
+        "INVITATION TO BID":        "Request for Bid",
+        "REQUEST FOR PROPOSAL":     "Request for Proposal",
+        "PROPOSAL REQUEST":         "Request for Proposal",
+        "REQUEST FOR INFORMATION":  "Request for Information",
+        "EXPRESSION OF INTEREST":   "Expression of Interest",
     }
+
+    # Keywords that reliably indicate RFP (professional consulting services)
+    _RFP_KEYWORDS = [
+        "PROFESSIONAL CIVIL", "PROFESSIONAL STRUCTURAL", "CIVIL AND STRUCTURAL",
+        "PROFESSIONAL ARCHITECTURAL", "ARCHITECTURAL SERVICES", "ARCHITECTURAL AND PRINCIPAL",
+        "PROFESSIONAL QUANTITY SURVEYING", "QUANTITY SURVEYING SERVICES",
+        "PROFESSIONAL ENGINEERING", "ENGINEERING SERVICES",
+        "PROFESSIONAL MECHANICAL", "MECHANICAL ENGINEERING SERVICES",
+        "PROFESSIONAL ELECTRICAL", "ELECTRICAL ENGINEERING SERVICES",
+        "PROFESSIONAL GEOTECHNICAL", "PROFESSIONAL TOWN PLANNING",
+        "PROFESSIONAL LANDSCAPE", "PROFESSIONAL PROJECT MANAGEMENT",
+        "PRINCIPAL AGENT", "PRINCIPAL AGENCY",
+        "HEALTH AND SAFETY AGENT", "OCCUPATIONAL HEALTH AND SAFETY AGENT",
+        "CONSTRUCTION HEALTH AND SAFETY AGENT",
+    ]
+
+    # Keywords that reliably indicate RFQ (goods / small-value services)
+    _RFQ_KEYWORDS = [
+        "QUOTATION", "PRICE QUOTATION",
+        "SUPPLY AND DELIVER", "SUPPLY & DELIVERY", "SUPPLY, DELIVER",
+        "SUPPLY AND DELIVERY", "PURCHASING OF",
+        "CATERING", "ACCOMMODATION AND MEALS",
+        "HIRING OF OCCASIONAL",
+    ]
+
+    def _inferTypeFromDescription(self, description: str) -> str:
+        """
+        Infer tender type from the tender description when OCR cannot determine it.
+        Returns one of the standard type strings, or empty string if unsure.
+        """
+        desc = (description or "").upper()
+
+        if "EXPRESSION OF INTEREST" in desc:
+            return "Expression of Interest"
+
+        if any(kw in desc for kw in self._RFQ_KEYWORDS):
+            return "Request for Quotation"
+
+        if any(kw in desc for kw in self._RFP_KEYWORDS):
+            return "Request for Proposal"
+
+        # Construction, maintenance, security, term contracts → RFB
+        return "Request for Bid"
 
     def _extractFromPdf(self, url: str) -> Dict[str, str]:
         """
@@ -422,6 +468,17 @@ class ECDPWScraper:
             for field, value in extracted.items():
                 if not tender.get(field):
                     tender[field] = value
+            # Fallback: infer type from description if OCR didn't find it
+            if not tender.get("TENDER_TYPE"):
+                tender["TENDER_TYPE"] = self._inferTypeFromDescription(
+                    tender.get("TENDER_DESCRIPTION", "")
+                )
+        # Final pass: any tender still missing a type gets inference applied
+        for tender in self.tenderData:
+            if not tender.get("TENDER_TYPE"):
+                tender["TENDER_TYPE"] = self._inferTypeFromDescription(
+                    tender.get("TENDER_DESCRIPTION", "")
+                )
         logging.info(f"PDF reading complete: {total}/{total} done.")
 
     def applyClosingDateFilter(self):
@@ -576,10 +633,13 @@ class ECDPWScraper:
             ]
             link_col_idx = df.columns.get_loc("LINK") + 1 if "LINK" in df.columns else None
 
-            red_fill = PatternFill("solid", fgColor="FF0000")
-            red_font = Font(color="FFFFFF", bold=True)
+            red_fill   = PatternFill("solid", fgColor="FF0000")
+            red_font   = Font(color="FFFFFF", bold=True)
+            green_fill = PatternFill("solid", fgColor="C6EFCE")
+            green_font = Font(color="276221", bold=True)
             today    = date.today()
             close_col_idx = df.columns.get_loc("CLOSING_DATE") + 1 if "CLOSING_DATE" in df.columns else None
+            type_col_idx  = df.columns.get_loc("TENDER_TYPE") + 1 if "TENDER_TYPE" in df.columns else None
 
             for row_idx in range(2, len(df) + 2):
                 for col_idx in date_col_indices:
@@ -599,13 +659,17 @@ class ECDPWScraper:
                         cd = cv.date() if isinstance(cv, datetime) else None
                         if cd:
                             days = (cd - today).days
-                            if days < 7:
-                                ccell.value = "Closing in less than 7 days"
-                                ccell.fill  = red_fill
-                                ccell.font  = red_font
-                            elif days < 14:
+                            if days < 14:
                                 ccell.fill = red_fill
                                 ccell.font = red_font
+
+                # Green highlight for Request for Quotation rows
+                if type_col_idx:
+                    tcell = ws.cell(row=row_idx, column=type_col_idx)
+                    if tcell.value == "Request for Quotation":
+                        for col_idx in range(1, ws.max_column + 1):
+                            ws.cell(row=row_idx, column=col_idx).fill = green_fill
+                        tcell.font = green_font
 
                 if link_col_idx:
                     cell = ws.cell(row=row_idx, column=link_col_idx)
