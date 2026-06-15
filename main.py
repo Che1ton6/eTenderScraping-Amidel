@@ -532,7 +532,7 @@ class App(tk.Tk):
         summaries_count  = 0
         batch_type       = self.batch_type_var.get()
         report_date      = datetime.strptime(date_to, "%Y-%m-%d")
-        root_dir         = os.path.join("data", "watchlist")
+        root_dir         = os.path.join("data", "All_Tenders")
 
         start = datetime.strptime(date_from, "%Y-%m-%d")
         end   = datetime.strptime(date_to,   "%Y-%m-%d")
