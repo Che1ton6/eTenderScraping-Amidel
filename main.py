@@ -350,6 +350,10 @@ class App(tk.Tk):
         tk.Label(body, textvariable=self.done_count_var, bg="white",
                  font=("Segoe UI", 13), fg="#333").pack()
 
+        self.done_dedup_var = tk.StringVar()
+        tk.Label(body, textvariable=self.done_dedup_var, bg="white",
+                 font=("Segoe UI", 10), fg="#888").pack()
+
         self.done_date_var = tk.StringVar()
         tk.Label(body, textvariable=self.done_date_var, bg="white",
                  font=("Segoe UI", 10), fg="#888").pack(pady=(4, 12))
@@ -468,6 +472,7 @@ class App(tk.Tk):
                         logging.error(f"Could not save daily file for {day}: {e}")
                     all_tenders.extend(scraper.tenderData)
 
+            raw_count   = len(all_tenders)
             all_tenders = deduplicate_tenders(all_tenders)
 
             if all_tenders:
@@ -493,7 +498,7 @@ class App(tk.Tk):
             return
 
         self.after(0, self._show_done, len(all_tenders), date_from, date_to,
-                   end_product_path, equation_updated, summaries_count)
+                   end_product_path, equation_updated, summaries_count, raw_count)
 
     # ── Watchlist helpers ─────────────────────────────────────────────────────
 
@@ -610,6 +615,7 @@ class App(tk.Tk):
             except Exception as e:
                 logging.error(f"Selenium watchlist scrapers error: {e}")
 
+            raw_count   = len(all_tenders)
             all_tenders = deduplicate_tenders(all_tenders)
 
             if all_tenders:
@@ -635,7 +641,7 @@ class App(tk.Tk):
             return
 
         self.after(0, self._show_done, len(all_tenders), date_from, date_to,
-                   end_product_path, equation_updated, summaries_count)
+                   end_product_path, equation_updated, summaries_count, raw_count)
 
     def _scrape_jpc(self, date_from: str, date_to: str) -> list:
         from JPCScraper import JPCScraper
@@ -660,10 +666,17 @@ class App(tk.Tk):
         except Exception as e:
             self.after(0, self._on_error, str(e))
 
-    def _show_done(self, count, date_from, date_to, end_product_path, equation_updated, summaries_count=0):
+    def _show_done(self, count, date_from, date_to, end_product_path, equation_updated, summaries_count=0, raw_count=None):
         self.done_count_var.set(
             f"{count} tender{'s' if count != 1 else ''} scraped"
         )
+        if raw_count is not None and raw_count > count:
+            dupes = raw_count - count
+            self.done_dedup_var.set(
+                f"{dupes} duplicate{'s' if dupes != 1 else ''} removed  ({raw_count} total found)"
+            )
+        else:
+            self.done_dedup_var.set("")
         if date_from and date_to:
             self.done_date_var.set(f"{date_from}  →  {date_to}")
         else:

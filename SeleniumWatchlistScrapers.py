@@ -25,10 +25,11 @@ from WatchlistScrapers import _parse_date, _parse_closing, _infer_type
 
 def _make_driver(ignore_ssl: bool = False) -> webdriver.Chrome:
     opts = Options()
-    opts.add_argument("--start-maximized")
+    opts.add_argument("--headless=new")
     opts.add_argument("--no-sandbox")
     opts.add_argument("--disable-dev-shm-usage")
     opts.add_argument("--disable-gpu")
+    opts.add_argument("--window-size=1920,1080")
     if ignore_ssl:
         opts.add_argument("--ignore-certificate-errors")
         opts.add_argument("--allow-insecure-localhost")
