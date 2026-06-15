@@ -206,10 +206,11 @@ def save_daily_file(tender_data: list, day: str, batch_folder: str) -> str:
 
 def create_end_product(df: pd.DataFrame, date_from: str, date_to: str,
                        batch_type: str, report_date: datetime,
-                       batch_folder: str) -> str:
+                       batch_folder: str,
+                       raw_df: pd.DataFrame = None) -> str:
     """
     Create the end product Excel file inside {batch_folder}/end product/.
-    Contains Tender Data (all days combined) and Final (formulas) tabs.
+    Sheets: Tender Data (deduplicated), Final (formulas), Raw Data (all scraped, optional).
     Returns the saved file path.
     """
     start = datetime.strptime(date_from, "%Y-%m-%d")
@@ -240,6 +241,16 @@ def create_end_product(df: pd.DataFrame, date_from: str, date_to: str,
     wb.remove(wb.active)
     write_tender_rows(wb.create_sheet("Tender Data"), df_out, BATCH_COLUMNS)
     _write_final_sheet(wb.create_sheet("Final"), batch_type, report_date)
+
+    if raw_df is not None and not raw_df.empty:
+        raw_records = []
+        raw_total = len(raw_df)
+        for idx, row in enumerate(raw_df.itertuples(index=False), 1):
+            t = {col: getattr(row, col, None) for col in TENDER_COLUMNS if col != "RECORD_ID"}
+            t["RECORD_ID"] = raw_total - idx + 1
+            raw_records.append(t)
+        write_tender_rows(wb.create_sheet("Raw Data"), pd.DataFrame(raw_records), BATCH_COLUMNS)
+        logging.info(f"Raw Data sheet written: {raw_total} rows ({raw_total - total} duplicates)")
 
     wb.save(filepath)
     logging.info(f"End product created: {filepath}")

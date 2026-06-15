@@ -472,6 +472,7 @@ class App(tk.Tk):
                         logging.error(f"Could not save daily file for {day}: {e}")
                     all_tenders.extend(scraper.tenderData)
 
+            raw_tenders = list(all_tenders)
             raw_count   = len(all_tenders)
             all_tenders = deduplicate_tenders(all_tenders)
 
@@ -479,7 +480,8 @@ class App(tk.Tk):
                 df = pd.DataFrame(all_tenders)
                 try:
                     end_product_path = create_end_product(
-                        df, date_from, date_to, batch_type, report_date, batch_folder
+                        df, date_from, date_to, batch_type, report_date, batch_folder,
+                        raw_df=pd.DataFrame(raw_tenders)
                     )
                     counts = calculate_counts(df)
                     update_equation_file(counts, batch_type, report_date, batch_folder)
@@ -615,6 +617,7 @@ class App(tk.Tk):
             except Exception as e:
                 logging.error(f"Selenium watchlist scrapers error: {e}")
 
+            raw_tenders = list(all_tenders)
             raw_count   = len(all_tenders)
             all_tenders = deduplicate_tenders(all_tenders)
 
@@ -622,7 +625,8 @@ class App(tk.Tk):
                 df = pd.DataFrame(all_tenders)
                 try:
                     end_product_path = create_end_product(
-                        df, date_from, date_to, batch_type, report_date, batch_folder
+                        df, date_from, date_to, batch_type, report_date, batch_folder,
+                        raw_df=pd.DataFrame(raw_tenders)
                     )
                     counts = calculate_counts(df)
                     update_equation_file(counts, batch_type, report_date, batch_folder)
