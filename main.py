@@ -506,7 +506,7 @@ class App(tk.Tk):
 
     _WATCHLIST_FILE = (
         r"C:\Users\CheltonGraham\OneDrive - Amidel (Pty) Ltd"
-        r"\Desktop\Websites.xlsx"
+        r"\Documents\Sales\Sales Auto Hub\Scraping and Reports\Websites.xlsx"
     )
 
     def _load_watchlist(self) -> set:
