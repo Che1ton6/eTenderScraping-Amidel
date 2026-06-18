@@ -177,10 +177,13 @@ def _write_final_sheet(ws, batch_type: str, report_date: datetime) -> None:
 def save_daily_file(tender_data: list, day: str, batch_folder: str) -> str:
     """
     Save one day's tender data to {batch_folder}/batches/tenders_YYYY_MM_DD.xlsx.
+    If tender_data is empty the filename gets a ' (No Tenders)' suffix so the
+    day is still accounted for in the batches folder.
     Returns the saved file path.
     """
     date_str  = day.replace("-", "_")
-    filepath  = os.path.join(batch_folder, "batches", f"tenders_{date_str}.xlsx")
+    suffix    = " (No Tenders)" if not tender_data else ""
+    filepath  = os.path.join(batch_folder, "batches", f"tenders_{date_str}{suffix}.xlsx")
 
     # Assign record IDs (first scraped = highest number)
     records = []

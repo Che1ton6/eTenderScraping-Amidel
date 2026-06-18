@@ -465,11 +465,11 @@ class App(tk.Tk):
                 scraper = TenderScraper(log_queue=self.log_queue)
                 scraper.run(export=False)
 
+                try:
+                    save_daily_file(scraper.tenderData or [], day, batch_folder)
+                except Exception as e:
+                    logging.error(f"Could not save daily file for {day}: {e}")
                 if scraper.tenderData:
-                    try:
-                        save_daily_file(scraper.tenderData, day, batch_folder)
-                    except Exception as e:
-                        logging.error(f"Could not save daily file for {day}: {e}")
                     all_tenders.extend(scraper.tenderData)
 
             raw_tenders = list(all_tenders)
@@ -555,11 +555,11 @@ class App(tk.Tk):
                 cm.updateConfig({"scraping": {"dateFrom": day, "dateTo": day}})
                 scraper = TenderScraper(log_queue=self.log_queue)
                 scraper.run(export=False)
+                try:
+                    save_daily_file(scraper.tenderData or [], day, batch_folder)
+                except Exception as e:
+                    logging.error(f"Could not save daily file for {day}: {e}")
                 if scraper.tenderData:
-                    try:
-                        save_daily_file(scraper.tenderData, day, batch_folder)
-                    except Exception as e:
-                        logging.error(f"Could not save daily file for {day}: {e}")
                     all_tenders.extend(scraper.tenderData)
 
             # ── EC DPW ────────────────────────────────────────────────────────
