@@ -146,7 +146,7 @@ class _Base:
 
     def _in_range(self, pub_date: Optional[date]) -> bool:
         if pub_date is None:
-            return True
+            return False
         return self.date_from <= pub_date <= self.date_to
 
     def run(self) -> List[dict]:
@@ -190,7 +190,7 @@ class MatatieleScraper(_Base):
             if m:
                 t["CLOSING_DATE"], t["CLOSING_TIME"] = _parse_closing(m.group(1))
 
-            t["PUBLICATION_DATE"] = self.date_to.strftime("%Y/%m/%d")
+            t["PUBLICATION_DATE"] = ""
             t["TENDER_TYPE"] = _infer_type(t["TENDER_DESCRIPTION"])
             self.tenderData.append(t)
 
@@ -232,7 +232,7 @@ class NtabankuluScraper(_Base):
                         continue
                     t["PUBLICATION_DATE"] = pub.strftime("%Y/%m/%d")
             if not t["PUBLICATION_DATE"]:
-                t["PUBLICATION_DATE"] = self.date_to.strftime("%Y/%m/%d")
+                t["PUBLICATION_DATE"] = ""
 
             t["TENDER_TYPE"] = _infer_type(t["TENDER_DESCRIPTION"])
             self.tenderData.append(t)
@@ -266,7 +266,7 @@ class UmzimvubuScraper(_Base):
                 a = tr.find("a", href=True)
                 if a:
                     t["LINK"] = a["href"]
-                t["PUBLICATION_DATE"] = self.date_to.strftime("%Y/%m/%d")
+                t["PUBLICATION_DATE"] = ""
                 t["TENDER_TYPE"] = _infer_type(t["TENDER_DESCRIPTION"])
                 self.tenderData.append(t)
         else:
@@ -278,7 +278,7 @@ class UmzimvubuScraper(_Base):
                     continue
                 if item.get("href"):
                     t["LINK"] = item["href"]
-                t["PUBLICATION_DATE"] = self.date_to.strftime("%Y/%m/%d")
+                t["PUBLICATION_DATE"] = ""
                 self.tenderData.append(t)
 
         logging.info(f"Umzimvubu: {len(self.tenderData)} tender(s)")
@@ -347,7 +347,7 @@ class WinnieMMLScraper(_Base):
                         continue
                     t["PUBLICATION_DATE"] = pub.strftime("%Y/%m/%d")
             if not t["PUBLICATION_DATE"]:
-                t["PUBLICATION_DATE"] = self.date_to.strftime("%Y/%m/%d")
+                t["PUBLICATION_DATE"] = ""
 
             if closing_idx is not None and closing_idx < len(tds):
                 t["CLOSING_DATE"], t["CLOSING_TIME"] = _parse_closing(
@@ -410,7 +410,7 @@ class MnqumaScraper(_Base):
                     continue
                 t["PUBLICATION_DATE"] = pub.strftime("%Y/%m/%d")
             else:
-                t["PUBLICATION_DATE"] = self.date_to.strftime("%Y/%m/%d")
+                t["PUBLICATION_DATE"] = ""
 
             t["TENDER_TYPE"] = _infer_type(t["TENDER_DESCRIPTION"])
             self.tenderData.append(t)
@@ -458,7 +458,7 @@ class GreatKeiScraper(_Base):
                         continue
                     t["PUBLICATION_DATE"] = pub.strftime("%Y/%m/%d")
             if not t["PUBLICATION_DATE"]:
-                t["PUBLICATION_DATE"] = self.date_to.strftime("%Y/%m/%d")
+                t["PUBLICATION_DATE"] = ""
 
             # Closing date — "12 June 2026 - 11:00 am" pattern
             close_m = re.search(
@@ -534,7 +534,7 @@ class JOSHCOScraper(_Base):
                         t["CLOSING_DATE"] = cd.strftime("%Y/%m/%d")
                     t["CLOSING_TIME"] = close_m.group(2) or ""
 
-                t["PUBLICATION_DATE"] = self.date_to.strftime("%Y/%m/%d")
+                t["PUBLICATION_DATE"] = ""
                 t["TENDER_TYPE"] = _infer_type(t["TENDER_DESCRIPTION"])
                 self.tenderData.append(t)
 
@@ -581,7 +581,7 @@ class GPLScraper(_Base):
                     continue
                 t["PUBLICATION_DATE"] = pub.strftime("%Y/%m/%d")
             else:
-                t["PUBLICATION_DATE"] = self.date_to.strftime("%Y/%m/%d")
+                t["PUBLICATION_DATE"] = ""
 
             t["TENDER_TYPE"] = _infer_type(t["TENDER_DESCRIPTION"])
             self.tenderData.append(t)
@@ -646,7 +646,7 @@ class RAFScraper(_Base):
                     t["CLOSING_DATE"], t["CLOSING_TIME"] = _parse_closing(close_m.group(1))
 
             if not t["PUBLICATION_DATE"]:
-                t["PUBLICATION_DATE"] = self.date_to.strftime("%Y/%m/%d")
+                t["PUBLICATION_DATE"] = ""
 
             t["TENDER_TYPE"] = _infer_type(t["TENDER_DESCRIPTION"])
             self.tenderData.append(t)
@@ -714,7 +714,7 @@ class NMBMMScraper(_Base):
                         continue
                     t["PUBLICATION_DATE"] = pub.strftime("%Y/%m/%d")
                 else:
-                    t["PUBLICATION_DATE"] = self.date_to.strftime("%Y/%m/%d")
+                    t["PUBLICATION_DATE"] = ""
 
                 if close_idx is not None:
                     t["CLOSING_DATE"], t["CLOSING_TIME"] = _parse_closing(_val(close_idx))
@@ -807,7 +807,7 @@ class DELScraper(_Base):
             if a:
                 t["LINK"] = a["href"]
 
-            t["PUBLICATION_DATE"] = self.date_to.strftime("%Y/%m/%d")
+            t["PUBLICATION_DATE"] = ""
             t["TENDER_TYPE"] = _infer_type(t["TENDER_DESCRIPTION"])
             self.tenderData.append(t)
 
@@ -870,7 +870,7 @@ class DIRCOScraper(_Base):
                         continue
                     t["PUBLICATION_DATE"] = pub.strftime("%Y/%m/%d")
             if not t["PUBLICATION_DATE"]:
-                t["PUBLICATION_DATE"] = self.date_to.strftime("%Y/%m/%d")
+                t["PUBLICATION_DATE"] = ""
 
             # Closing date
             close_m = re.search(
@@ -991,7 +991,7 @@ class WJHBScraper(_Base):
                     continue
                 t["PUBLICATION_DATE"] = pub.strftime("%Y/%m/%d")
             else:
-                t["PUBLICATION_DATE"] = self.date_to.strftime("%Y/%m/%d")
+                t["PUBLICATION_DATE"] = ""
 
             if closing_idx is not None:
                 t["CLOSING_DATE"], t["CLOSING_TIME"] = _parse_closing(_val(closing_idx))
@@ -1052,7 +1052,7 @@ class SITAScraper(_Base):
                     continue
                 t["PUBLICATION_DATE"] = pub.strftime("%Y/%m/%d")
             else:
-                t["PUBLICATION_DATE"] = self.date_to.strftime("%Y/%m/%d")
+                t["PUBLICATION_DATE"] = ""
 
             close_raw = data.get("closing date") or data.get("closing") or ""
             if close_raw:
@@ -1115,7 +1115,7 @@ class GDoHScraper(_Base):
             if len(tds) > 4:
                 t["CLOSING_DATE"], t["CLOSING_TIME"] = _parse_closing(tds[4].get_text(strip=True))
 
-            t["PUBLICATION_DATE"] = self.date_to.strftime("%Y/%m/%d")
+            t["PUBLICATION_DATE"] = ""
             t["TENDER_TYPE"]      = _infer_type(t["TENDER_DESCRIPTION"])
             self.tenderData.append(t)
 
@@ -1170,7 +1170,7 @@ class BuffaloCityMMScraper(_Base):
                         href = "https://www.buffalocity.gov.za/" + href.lstrip("/")
                     t["LINK"] = href
 
-                t["PUBLICATION_DATE"] = self.date_to.strftime("%Y/%m/%d")
+                t["PUBLICATION_DATE"] = ""
                 t["TENDER_TYPE"]      = tender_type
                 self.tenderData.append(t)
 
@@ -1203,7 +1203,7 @@ class SIUScraper(_Base):
             t["TENDER_DESCRIPTION"] = text[:300]
             if a:
                 t["LINK"] = a["href"]
-            t["PUBLICATION_DATE"] = self.date_to.strftime("%Y/%m/%d")
+            t["PUBLICATION_DATE"] = ""
             t["TENDER_TYPE"] = _infer_type(t["TENDER_DESCRIPTION"])
             self.tenderData.append(t)
 

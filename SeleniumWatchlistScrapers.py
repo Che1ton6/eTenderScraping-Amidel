@@ -223,7 +223,7 @@ def scrape_city_power(date_from: str, date_to: str, log_queue=None) -> List[dict
                     continue
 
                 pub = _parse_date(_val(pub_idx)) if pub_idx is not None else None
-                t["PUBLICATION_DATE"] = pub.strftime("%Y/%m/%d") if pub else pub_proxy
+                t["PUBLICATION_DATE"] = pub.strftime("%Y/%m/%d") if pub else ""
 
                 if close_idx is not None:
                     t["CLOSING_DATE"], t["CLOSING_TIME"] = _parse_closing(_val(close_idx))
@@ -246,7 +246,7 @@ def scrape_city_power(date_from: str, date_to: str, log_queue=None) -> List[dict
                 t = _blank(report_date, "City Power Johannesburg", "Gauteng",
                            "CITYPOWER.CO.ZA")
                 t["TENDER_DESCRIPTION"] = desc
-                t["PUBLICATION_DATE"]   = pub_proxy
+                t["PUBLICATION_DATE"]   = ""
                 a = card.find("a", href=True)
                 if a:
                     t["LINK"] = a["href"]
