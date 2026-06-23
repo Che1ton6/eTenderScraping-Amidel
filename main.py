@@ -472,9 +472,14 @@ class App(tk.Tk):
                 if scraper.tenderData:
                     all_tenders.extend(scraper.tenderData)
 
-            raw_tenders = list(all_tenders)
-            raw_count   = len(all_tenders)
-            all_tenders = deduplicate_tenders(all_tenders)
+            raw_tenders   = list(all_tenders)
+            raw_count     = len(all_tenders)
+            all_tenders   = [t for t in all_tenders
+                             if str(t.get("PUBLICATION_DATE") or "").strip()]
+            undated_removed = raw_count - len(all_tenders)
+            pre_dedup     = len(all_tenders)
+            all_tenders   = deduplicate_tenders(all_tenders)
+            dupes_removed = pre_dedup - len(all_tenders)
 
             if all_tenders:
                 df = pd.DataFrame(all_tenders)
@@ -500,7 +505,8 @@ class App(tk.Tk):
             return
 
         self.after(0, self._show_done, len(all_tenders), date_from, date_to,
-                   end_product_path, equation_updated, summaries_count, raw_count)
+                   end_product_path, equation_updated, summaries_count,
+                   raw_count, undated_removed, dupes_removed)
 
     # ── Watchlist helpers ─────────────────────────────────────────────────────
 
@@ -617,9 +623,14 @@ class App(tk.Tk):
             except Exception as e:
                 logging.error(f"Selenium watchlist scrapers error: {e}")
 
-            raw_tenders = list(all_tenders)
-            raw_count   = len(all_tenders)
-            all_tenders = deduplicate_tenders(all_tenders)
+            raw_tenders     = list(all_tenders)
+            raw_count       = len(all_tenders)
+            all_tenders     = [t for t in all_tenders
+                               if str(t.get("PUBLICATION_DATE") or "").strip()]
+            undated_removed = raw_count - len(all_tenders)
+            pre_dedup       = len(all_tenders)
+            all_tenders     = deduplicate_tenders(all_tenders)
+            dupes_removed   = pre_dedup - len(all_tenders)
 
             if all_tenders:
                 df = pd.DataFrame(all_tenders)
@@ -645,7 +656,8 @@ class App(tk.Tk):
             return
 
         self.after(0, self._show_done, len(all_tenders), date_from, date_to,
-                   end_product_path, equation_updated, summaries_count, raw_count)
+                   end_product_path, equation_updated, summaries_count,
+                   raw_count, undated_removed, dupes_removed)
 
     def _scrape_jpc(self, date_from: str, date_to: str) -> list:
         from JPCScraper import JPCScraper
@@ -670,17 +682,19 @@ class App(tk.Tk):
         except Exception as e:
             self.after(0, self._on_error, str(e))
 
-    def _show_done(self, count, date_from, date_to, end_product_path, equation_updated, summaries_count=0, raw_count=None):
+    def _show_done(self, count, date_from, date_to, end_product_path, equation_updated,
+                   summaries_count=0, raw_count=None, undated_removed=0, dupes_removed=0):
         self.done_count_var.set(
             f"{count} tender{'s' if count != 1 else ''} scraped"
         )
-        if raw_count is not None and raw_count > count:
-            dupes = raw_count - count
-            self.done_dedup_var.set(
-                f"{dupes} duplicate{'s' if dupes != 1 else ''} removed  ({raw_count} total found)"
-            )
-        else:
-            self.done_dedup_var.set("")
+        parts = []
+        if undated_removed:
+            parts.append(f"{undated_removed} excluded (no pub date)")
+        if dupes_removed:
+            parts.append(f"{dupes_removed} duplicate{'s' if dupes_removed != 1 else ''} removed")
+        if parts and raw_count:
+            parts.append(f"{raw_count} total found")
+        self.done_dedup_var.set("  ·  ".join(parts) if parts else "")
         if date_from and date_to:
             self.done_date_var.set(f"{date_from}  →  {date_to}")
         else:

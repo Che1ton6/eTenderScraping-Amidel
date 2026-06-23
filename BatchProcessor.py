@@ -230,15 +230,6 @@ def create_end_product(df: pd.DataFrame, date_from: str, date_to: str,
     filename = f"RFQ_and_ICT_Checker_({label}).xlsx"
     filepath = os.path.join(batch_folder, "end product", filename)
 
-    # Drop rows with no real publication date (proxy-dated watchlist tenders)
-    df = df[df["PUBLICATION_DATE"].notna() & (df["PUBLICATION_DATE"].astype(str).str.strip() != "")]
-    if df.empty:
-        logging.warning("create_end_product: all rows removed by pub-date filter")
-        return filepath
-
-    # Deduplicate across all sources before final output
-    df = pd.DataFrame(deduplicate_tenders(df.to_dict("records")))
-
     # Assign record IDs across the full combined dataset
     records = []
     total = len(df)
