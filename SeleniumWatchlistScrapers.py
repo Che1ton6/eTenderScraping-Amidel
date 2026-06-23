@@ -30,10 +30,17 @@ def _make_driver(ignore_ssl: bool = False) -> webdriver.Chrome:
     opts.add_argument("--disable-dev-shm-usage")
     opts.add_argument("--disable-gpu")
     opts.add_argument("--window-size=1920,1080")
+    opts.add_argument("--disable-renderer-backgrounding")
+    opts.add_argument("--disable-background-timer-throttling")
+    opts.add_argument("--disable-backgrounding-occluded-windows")
+    opts.add_argument("--remote-debugging-port=0")
+    opts.add_argument("--disable-extensions")
     if ignore_ssl:
         opts.add_argument("--ignore-certificate-errors")
         opts.add_argument("--allow-insecure-localhost")
-    return webdriver.Chrome(options=opts)
+    driver = webdriver.Chrome(options=opts)
+    driver.set_page_load_timeout(60)
+    return driver
 
 
 def _blank(report_date, department, province, source_key) -> dict:
@@ -58,7 +65,6 @@ def scrape_amahlathi(date_from: str, date_to: str, log_queue=None) -> List[dict]
     Clicks the Open Tenders tab then scrapes visible cards.
     """
     report_date = date_to.replace("-", "/")
-    pub_date_str = datetime.strptime(date_to, "%Y-%m-%d").date().strftime("%Y/%m/%d")
     tenders = []
     driver = None
 
@@ -109,7 +115,7 @@ def scrape_amahlathi(date_from: str, date_to: str, log_queue=None) -> List[dict]
                 t = _blank(report_date, "Amahlathi Local Municipality", "Eastern Cape",
                            "AMAHLATHI.GOV.ZA")
                 t["TENDER_DESCRIPTION"] = desc
-                t["PUBLICATION_DATE"]   = pub_date_str
+                t["PUBLICATION_DATE"]   = ""
                 t["TENDER_TYPE"]        = _infer_type(desc)
 
                 # Link
@@ -151,6 +157,85 @@ def scrape_amahlathi(date_from: str, date_to: str, log_queue=None) -> List[dict]
                 pass
 
     logging.info(f"Amahlathi LM: {len(tenders)} tender(s)")
+    return tenders
+
+
+# ── Matatiele LM ─────────────────────────────────────────────────────────────
+
+def scrape_matatiele(date_from: str, date_to: str, log_queue=None) -> List[dict]:
+    """
+    https://www.matatiele.gov.za/tenders/
+    WP Job Manager renders listings via JavaScript — requires full browser.
+    """
+    report_date = date_to.replace("-", "/")
+    tenders = []
+    driver = None
+
+    logging.info("Matatiele LM: launching browser (WP Job Manager JS rendering)")
+    try:
+        driver = _make_driver()
+        driver.get("https://www.matatiele.gov.za/tenders/")
+
+        # Wait for job listings to appear
+        try:
+            WebDriverWait(driver, 20).until(
+                EC.presence_of_element_located(
+                    (By.CSS_SELECTOR, "ul.jobs, .job_listings, li.job_listing")
+                )
+            )
+        except TimeoutException:
+            logging.warning("Matatiele: timed out waiting for job listings — scraping what loaded")
+        time.sleep(3)
+
+        from bs4 import BeautifulSoup
+        soup = BeautifulSoup(driver.page_source, "html.parser")
+
+        listings = soup.select("li.job_listing, article.job_listing")
+        if not listings:
+            listings = soup.select("ul.jobs li, .job_listings li")
+
+        seen = set()
+        for item in listings:
+            heading = item.find(["h3", "h2", "h4"])
+            if not heading:
+                continue
+            desc = heading.get_text(strip=True)
+            if not desc or desc in seen:
+                continue
+            seen.add(desc)
+
+            t = _blank(report_date, "Matatiele Local Municipality", "Eastern Cape",
+                       "MATATIELE.GOV.ZA")
+            t["TENDER_DESCRIPTION"] = desc
+            t["TENDER_TYPE"]        = _infer_type(desc)
+
+            a = item.find("a", href=True)
+            if a:
+                t["LINK"] = a["href"]
+
+            text = item.get_text(" ", strip=True)
+            close_m = re.search(
+                r"(?:[Ee]xpir|[Cc]los)\w*\s*:?\s*"
+                r"(\d{1,2}\s+[A-Za-z]+\s+\d{4}|\d{1,2}/\d{1,2}/\d{4}|[A-Za-z]+\s+\d{1,2},?\s+\d{4})",
+                text,
+            )
+            if close_m:
+                cd = _parse_date(close_m.group(1))
+                if cd:
+                    t["CLOSING_DATE"] = cd.strftime("%Y/%m/%d")
+
+            tenders.append(t)
+
+    except Exception as e:
+        logging.error(f"Matatiele LM scraper error: {e}")
+    finally:
+        if driver:
+            try:
+                driver.quit()
+            except Exception:
+                pass
+
+    logging.info(f"Matatiele LM: {len(tenders)} tender(s)")
     return tenders
 
 
@@ -280,6 +365,7 @@ def scrape_city_power(date_from: str, date_to: str, log_queue=None) -> List[dict
 SELENIUM_REGISTRY = {
     "Amahlathi LM": scrape_amahlathi,
     "CP JHB":       scrape_city_power,
+    "Matatiele LM": scrape_matatiele,
 }
 
 

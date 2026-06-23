@@ -17,6 +17,7 @@ from BatchProcessor import (create_batch_folder, save_daily_file,
                             calculate_counts, update_power_bi_export,
                             deduplicate_tenders)
 from TenderSummary import create_tender_summary
+from TenderAnalysisGenerator import create_tender_analysis
 
 # ── Amidel brand colours ──────────────────────────────────────────────────────
 NAVY        = "#1C3880"
@@ -484,18 +485,16 @@ class App(tk.Tk):
                 if scraper.tenderData:
                     all_tenders.extend(scraper.tenderData)
 
-            raw_tenders     = list(all_tenders)
-            raw_count       = len(all_tenders)
-            all_tenders     = [t for t in all_tenders
-                               if str(t.get("PUBLICATION_DATE") or "").strip()
-                               and self._closing_not_expired(t, date_from)]
-            undated_removed = raw_count - len(all_tenders)
-            pre_dedup       = len(all_tenders)
-            all_tenders     = deduplicate_tenders(all_tenders)
-            dupes_removed   = pre_dedup - len(all_tenders)
+            raw_tenders  = list(all_tenders)
+            pre_dedup    = len([t for t in all_tenders if self._closing_not_expired(t, date_from)])
+            all_tenders  = [t for t in all_tenders if self._closing_not_expired(t, date_from)]
+            expired_removed = len(raw_tenders) - pre_dedup
+            all_tenders  = deduplicate_tenders(all_tenders)
+            dupes_removed = pre_dedup - len(all_tenders)
 
             if all_tenders:
                 df = pd.DataFrame(all_tenders)
+                report_date_str = datetime.strptime(date_to, "%Y-%m-%d").strftime("%d %b %Y").lstrip("0")
                 try:
                     end_product_path = create_end_product(
                         df, date_from, date_to, batch_type, report_date, batch_folder,
@@ -513,13 +512,18 @@ class App(tk.Tk):
                 except Exception as e:
                     logging.error(f"Tender Summary creation error: {e}")
 
+                try:
+                    create_tender_analysis(df, batch_folder, report_date_str)
+                except Exception as e:
+                    logging.error(f"Tender Analysis creation error: {e}")
+
         except Exception as e:
             self.after(0, self._on_error, str(e))
             return
 
         self.after(0, self._show_done, len(all_tenders), date_from, date_to,
                    end_product_path, equation_updated, summaries_count,
-                   raw_count, undated_removed, dupes_removed)
+                   len(raw_tenders), expired_removed, dupes_removed)
 
     # ── Watchlist helpers ─────────────────────────────────────────────────────
 
@@ -637,17 +641,15 @@ class App(tk.Tk):
                 logging.error(f"Selenium watchlist scrapers error: {e}")
 
             raw_tenders     = list(all_tenders)
-            raw_count       = len(all_tenders)
-            all_tenders     = [t for t in all_tenders
-                               if str(t.get("PUBLICATION_DATE") or "").strip()
-                               and self._closing_not_expired(t, date_from)]
-            undated_removed = raw_count - len(all_tenders)
-            pre_dedup       = len(all_tenders)
+            pre_dedup       = len([t for t in all_tenders if self._closing_not_expired(t, date_from)])
+            all_tenders     = [t for t in all_tenders if self._closing_not_expired(t, date_from)]
+            expired_removed = len(raw_tenders) - pre_dedup
             all_tenders     = deduplicate_tenders(all_tenders)
             dupes_removed   = pre_dedup - len(all_tenders)
 
             if all_tenders:
                 df = pd.DataFrame(all_tenders)
+                report_date_str = datetime.strptime(date_to, "%Y-%m-%d").strftime("%d %b %Y").lstrip("0")
                 try:
                     end_product_path = create_end_product(
                         df, date_from, date_to, batch_type, report_date, batch_folder,
@@ -665,13 +667,18 @@ class App(tk.Tk):
                 except Exception as e:
                     logging.error(f"Watchlist Tender Summary error: {e}")
 
+                try:
+                    create_tender_analysis(df, batch_folder, report_date_str)
+                except Exception as e:
+                    logging.error(f"Watchlist Tender Analysis creation error: {e}")
+
         except Exception as e:
             self.after(0, self._on_error, str(e))
             return
 
         self.after(0, self._show_done, len(all_tenders), date_from, date_to,
                    end_product_path, equation_updated, summaries_count,
-                   raw_count, undated_removed, dupes_removed)
+                   len(raw_tenders), expired_removed, dupes_removed)
 
     def _scrape_jpc(self, date_from: str, date_to: str) -> list:
         from JPCScraper import JPCScraper
@@ -697,13 +704,13 @@ class App(tk.Tk):
             self.after(0, self._on_error, str(e))
 
     def _show_done(self, count, date_from, date_to, end_product_path, equation_updated,
-                   summaries_count=0, raw_count=None, undated_removed=0, dupes_removed=0):
+                   summaries_count=0, raw_count=None, expired_removed=0, dupes_removed=0):
         self.done_count_var.set(
             f"{count} tender{'s' if count != 1 else ''} scraped"
         )
         parts = []
-        if undated_removed:
-            parts.append(f"{undated_removed} excluded (no pub date)")
+        if expired_removed:
+            parts.append(f"{expired_removed} expired removed")
         if dupes_removed:
             parts.append(f"{dupes_removed} duplicate{'s' if dupes_removed != 1 else ''} removed")
         if parts and raw_count:

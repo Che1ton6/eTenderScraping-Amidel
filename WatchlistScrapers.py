@@ -96,6 +96,7 @@ def _get(url: str, verify=True, timeout=30) -> Optional[BeautifulSoup]:
     try:
         resp = requests.get(url, headers=_HEADERS, timeout=timeout, verify=verify)
         resp.raise_for_status()
+        resp.encoding = resp.apparent_encoding or "utf-8"
         return BeautifulSoup(resp.text, "html.parser")
     except Exception as e:
         logging.error(f"Fetch failed {url}: {e}")
@@ -156,45 +157,18 @@ class _Base:
 # ── Individual scrapers ───────────────────────────────────────────────────────
 
 class MatatieleScraper(_Base):
-    """https://www.matatiele.gov.za/tenders/ — WordPress jobs-style listing."""
+    """https://www.matatiele.gov.za/tenders/ — WP Job Manager (JavaScript-rendered).
+    Static scraping returns nothing; tenders fetched via Selenium scraper instead.
+    """
     DEPARTMENT = "Matatiele Local Municipality"
     PROVINCE   = "Eastern Cape"
     SOURCE_KEY = "MATATIELE.GOV.ZA"
 
     def run(self):
-        logging.info("Matatiele: fetching tender page")
-        soup = _get("https://www.matatiele.gov.za/tenders/")
-        if not soup:
-            return self.tenderData
-
-        # WordPress job_listing elements or generic list items
-        entries = soup.select("li.job_listing, article.job_listing, li.listing")
-        if not entries:
-            entries = soup.select("ul.jobs li, .jobs li")
-        if not entries:
-            # Generic: look for any <li> containing a link and "close" text
-            entries = [li for li in soup.find_all("li")
-                       if li.find("a") and re.search(r"clos", li.get_text(), re.I)]
-
-        for entry in entries:
-            t = self._blank()
-            a = entry.find("a", href=True)
-            if a:
-                t["TENDER_DESCRIPTION"] = a.get_text(strip=True)
-                t["LINK"] = a["href"]
-            if not t["TENDER_DESCRIPTION"]:
-                continue
-
-            text = entry.get_text(" ", strip=True)
-            m = re.search(r"[Cc]loses?:?\s*([A-Za-z]+\s+\d{1,2},?\s*\d{4}|\d{1,2}\s+[A-Za-z]+\s+\d{4}|\d{1,2}/\d{1,2}/\d{4})", text)
-            if m:
-                t["CLOSING_DATE"], t["CLOSING_TIME"] = _parse_closing(m.group(1))
-
-            t["PUBLICATION_DATE"] = ""
-            t["TENDER_TYPE"] = _infer_type(t["TENDER_DESCRIPTION"])
-            self.tenderData.append(t)
-
-        logging.info(f"Matatiele: {len(self.tenderData)} tender(s)")
+        logging.info(
+            "Matatiele: page requires JavaScript (WP Job Manager renders listings "
+            "client-side) — static scraper skipped; Selenium scraper handles this source."
+        )
         return self.tenderData
 
 
@@ -366,54 +340,97 @@ class WinnieMMLScraper(_Base):
 
 
 class MnqumaScraper(_Base):
-    """https://www.mnquma.gov.za/notices/ — card layout."""
+    """https://www.mnquma.gov.za/supply-chain/ — card listing of current tenders.
+    Publication date and closing date are on each tender's individual post page,
+    not on the listing page. Fetches up to 50 individual pages per run.
+    """
     DEPARTMENT = "Mnquma Local Municipality"
     PROVINCE   = "Eastern Cape"
     SOURCE_KEY = "MNQUMA.GOV.ZA"
 
+    _LISTING = "https://www.mnquma.gov.za/supply-chain/"
+
     def run(self):
-        logging.info("Mnquma: fetching notices page")
-        soup = _get("https://www.mnquma.gov.za/notices/")
+        logging.info("Mnquma: fetching supply-chain listing")
+        soup = _get(self._LISTING)
         if not soup:
             return self.tenderData
 
-        # Cards — h3 headings are tender titles/ref numbers
-        cards = soup.select("article, .card, .notice, .post")
-        if not cards:
-            cards = soup.find_all(["article", "div"],
-                                  class_=re.compile(r"card|notice|post|entry", re.I))
+        # Collect all unique "VIEW TENDER" link targets
+        links = []
+        seen_hrefs: set = set()
+        for a in soup.find_all("a", href=True):
+            if a.get_text(strip=True).upper() == "VIEW TENDER":
+                href = a["href"]
+                if href not in seen_hrefs:
+                    seen_hrefs.add(href)
+                    links.append(href)
 
-        for card in cards:
-            t = self._blank()
-            heading = card.find(["h3", "h2", "h4"])
-            if not heading:
-                continue
-            a = heading.find("a", href=True) or card.find("a", href=True)
-            t["TENDER_DESCRIPTION"] = heading.get_text(strip=True)
-            if a:
-                t["LINK"] = a["href"]
-                # Ref number may be in the heading
-                ref_m = re.search(r"MNQ[^,\s]+", t["TENDER_DESCRIPTION"])
-                if ref_m:
-                    t["TENDER_ID"] = ref_m.group(0)
+        logging.info(f"Mnquma: {len(links)} tender page(s) to fetch")
 
-            if not t["TENDER_DESCRIPTION"]:
-                continue
-
-            # Date from card meta
-            time_el = card.find("time")
-            pub = None
-            if time_el:
-                pub = _parse_date(time_el.get("datetime", "") or time_el.get_text())
-            if pub:
-                if not self._in_range(pub):
+        for url in links[:50]:
+            try:
+                post = _get(url)
+                if not post:
                     continue
-                t["PUBLICATION_DATE"] = pub.strftime("%Y/%m/%d")
-            else:
-                t["PUBLICATION_DATE"] = ""
 
-            t["TENDER_TYPE"] = _infer_type(t["TENDER_DESCRIPTION"])
-            self.tenderData.append(t)
+                # Page title contains description + SCM reference number.
+                # Mnquma uses Elementor (h4.elementor-heading-title); fall back to any heading.
+                heading = (
+                    post.find(class_="elementor-heading-title")
+                    or post.find(["h1", "h2", "h3", "h4"])
+                )
+                if not heading:
+                    continue
+                desc = heading.get_text(strip=True)
+                if not desc:
+                    continue
+
+                t = self._blank()
+                t["TENDER_DESCRIPTION"] = desc
+                t["LINK"] = url
+
+                # Extract SCM reference from title, e.g. "... MNQ/SCM/94/25-26"
+                ref_m = re.search(
+                    r"((?:MNQ|SCM)[/\-](?:SCM|MLM)[/\-])(\d+)[/\-](\d{2,4})[/\-](\d{2,4})",
+                    desc, re.I,
+                )
+                if ref_m:
+                    prefix = ref_m.group(1).upper().replace("-", "/")
+                    t["TENDER_ID"] = f"{prefix}{ref_m.group(2)}/{ref_m.group(3)}-{ref_m.group(4)}"
+                else:
+                    # Fallback: try URL slug e.g. "...-mnq-scm-94-25-26"
+                    slug = url.rstrip("/").split("/")[-1]
+                    slug_m = re.search(
+                        r"(?:mnq|scm|mlm)[/-]scm[/-](\d+)[/-](\d{2,4})[/-](\d{2,4})$", slug, re.I
+                    )
+                    if slug_m:
+                        t["TENDER_ID"] = f"MNQ/SCM/{slug_m.group(1)}/{slug_m.group(2)}-{slug_m.group(3)}"
+
+                # Pub date and closing date are in the post body as labelled fields
+                body = post.get_text(" ", strip=True)
+                pub_m = re.search(r"Publish\s+Date:\s*(\d{1,2}\s+[A-Za-z]+\s+\d{4})", body, re.I)
+                if pub_m:
+                    pub = _parse_date(pub_m.group(1))
+                    if pub:
+                        t["PUBLICATION_DATE"] = pub.strftime("%Y/%m/%d")
+
+                close_m = re.search(r"Closing\s+Date:\s*(\d{1,2}\s+[A-Za-z]+\s+\d{4})", body, re.I)
+                if close_m:
+                    cd = _parse_date(close_m.group(1))
+                    if cd:
+                        t["CLOSING_DATE"] = cd.strftime("%Y/%m/%d")
+
+                # First document download link (PDF/DOC preferred over landing page)
+                doc_a = post.find("a", href=re.compile(r"\.(pdf|docx?|xlsx?)$", re.I))
+                if doc_a:
+                    t["LINK"] = doc_a["href"]
+
+                t["TENDER_TYPE"] = _infer_type(desc)
+                self.tenderData.append(t)
+
+            except Exception as e:
+                logging.debug(f"Mnquma post error {url}: {e}")
 
         logging.info(f"Mnquma: {len(self.tenderData)} tender(s)")
         return self.tenderData
@@ -425,58 +442,79 @@ class GreatKeiScraper(_Base):
     PROVINCE   = "Eastern Cape"
     SOURCE_KEY = "GREATKEILM.GOV.ZA"
 
+    _BASE_URL = "https://greatkeilm.gov.za/web/category/tenders/open-tenders/"
+
     def run(self):
-        logging.info("Great Kei: fetching open tenders")
-        soup = _get("https://greatkeilm.gov.za/web/category/tenders/open-tenders/")
-        if not soup:
-            return self.tenderData
+        logging.info("Great Kei: fetching open tenders (paginated)")
+        seen_ids: set = set()
+        pages_fetched = 0
 
-        articles = soup.select("article, .post, .hentry")
-        for art in articles:
-            t = self._blank()
-            heading = art.find(["h4", "h3", "h2"])
-            if not heading:
-                continue
-            a = heading.find("a", href=True) or art.find("a", href=True)
-            t["TENDER_DESCRIPTION"] = heading.get_text(strip=True)
-            if a:
-                t["LINK"] = a["href"]
+        for page in range(1, 6):  # fetch up to 5 pages
+            url = self._BASE_URL if page == 1 else f"{self._BASE_URL}page/{page}/"
+            soup = _get(url)
+            if not soup:
+                break
+            articles = soup.select("article, .post, .hentry")
+            if not articles:
+                break
+            pages_fetched += 1
+            found_in_range = False
 
-            text = art.get_text(" ", strip=True)
+            for art in articles:
+                t = self._blank()
+                heading = art.find(["h4", "h3", "h2"])
+                if not heading:
+                    continue
+                a = heading.find("a", href=True) or art.find("a", href=True)
+                t["TENDER_DESCRIPTION"] = heading.get_text(strip=True)
+                if a:
+                    t["LINK"] = a["href"]
 
-            # Reference number e.g. "RFQ/BTO/09/2025/26"
-            ref_m = re.search(r"(RFQ|BID|SCM|RFP|T|B)[/\-]\w+[/\-]\w+", text, re.I)
-            if ref_m:
-                t["TENDER_ID"] = ref_m.group(0)
+                text = art.get_text(" ", strip=True)
 
-            # Publication date
-            time_el = art.find("time")
-            if time_el:
-                pub = _parse_date(time_el.get("datetime", "") or time_el.get_text())
-                if pub:
-                    if not self._in_range(pub):
-                        continue
-                    t["PUBLICATION_DATE"] = pub.strftime("%Y/%m/%d")
-            if not t["PUBLICATION_DATE"]:
-                t["PUBLICATION_DATE"] = ""
+                # Reference number e.g. "RFQ/BTO/09/2025/26"
+                ref_m = re.search(r"(RFQ|BID|SCM|RFP|T|B)[/\-]\w+[/\-]\w+", text, re.I)
+                if ref_m:
+                    t["TENDER_ID"] = ref_m.group(0)
 
-            # Closing date — "12 June 2026 - 11:00 am" pattern
-            close_m = re.search(
-                r"[Cc]los(?:ing|ed?)\s*(?:date)?:?\s*"
-                r"(\d{1,2}\s+[A-Za-z]+\s+\d{4}|\d{1,2}/\d{1,2}/\d{4})"
-                r"(?:\s*[-–]\s*(\d{1,2}[h:]\d{2}(?:\s*[AaPp][Mm])?))?",
-                text,
-            )
-            if close_m:
-                cd = _parse_date(close_m.group(1))
-                if cd:
-                    t["CLOSING_DATE"] = cd.strftime("%Y/%m/%d")
-                t["CLOSING_TIME"] = close_m.group(2) or ""
+                # Skip already-seen IDs across pages
+                dedup_key = t["TENDER_ID"] or t["TENDER_DESCRIPTION"][:60]
+                if dedup_key in seen_ids:
+                    continue
+                seen_ids.add(dedup_key)
 
-            t["TENDER_TYPE"] = _infer_type(t["TENDER_DESCRIPTION"])
-            self.tenderData.append(t)
+                # Publication date
+                time_el = art.find("time")
+                if time_el:
+                    pub = _parse_date(time_el.get("datetime", "") or time_el.get_text())
+                    if pub:
+                        if self._in_range(pub):
+                            found_in_range = True
+                        t["PUBLICATION_DATE"] = pub.strftime("%Y/%m/%d")
+                if not t["PUBLICATION_DATE"]:
+                    t["PUBLICATION_DATE"] = ""
 
-        logging.info(f"Great Kei: {len(self.tenderData)} tender(s)")
+                # Closing date — "12 June 2026 - 11:00 am" pattern
+                close_m = re.search(
+                    r"[Cc]los(?:ing|ed?)\s*(?:date)?:?\s*"
+                    r"(\d{1,2}\s+[A-Za-z]+\s+\d{4}|\d{1,2}/\d{1,2}/\d{4})"
+                    r"(?:\s*[-–]\s*(\d{1,2}[h:]\d{2}(?:\s*[AaPp][Mm])?))?",
+                    text,
+                )
+                if close_m:
+                    cd = _parse_date(close_m.group(1))
+                    if cd:
+                        t["CLOSING_DATE"] = cd.strftime("%Y/%m/%d")
+                    t["CLOSING_TIME"] = close_m.group(2) or ""
+
+                t["TENDER_TYPE"] = _infer_type(t["TENDER_DESCRIPTION"])
+                self.tenderData.append(t)
+
+            # Stop paginating if no in-range items found on this page
+            if page > 1 and not found_in_range:
+                break
+
+        logging.info(f"Great Kei: {len(self.tenderData)} tender(s) across {pages_fetched} page(s)")
         return self.tenderData
 
 
@@ -591,72 +629,29 @@ class GPLScraper(_Base):
 
 
 class RAFScraper(_Base):
-    """http://www.raf.co.za/procurement/Pages/Tenders-running.aspx — bullet list."""
+    """https://www.raf.co.za/procurement/Pages/Tenders-running.aspx
+    SharePoint portal — requires JavaScript to render tender listings.
+    Static scraping returns no content; manual monitoring required.
+    """
     DEPARTMENT = "Road Accident Fund"
     PROVINCE   = "National"
     SOURCE_KEY = "RAF.CO.ZA"
-    _URL       = "http://www.raf.co.za/procurement/Pages/Tenders-running.aspx"
 
     def run(self):
-        logging.info("RAF: fetching running tenders")
-        soup = _get(self._URL)
-        if not soup:
-            return self.tenderData
-
-        # Each tender is a <li> inside a nested <ul>, or an <h3>/<h4> block
-        # Structure: h3 = tender number (linked), nested ul = metadata
-        for h in soup.find_all(["h3", "h4"]):
-            a = h.find("a", href=True)
-            title = h.get_text(strip=True)
-            if not title:
-                continue
-
-            t = self._blank()
-            t["TENDER_DESCRIPTION"] = title
-            if a:
-                t["LINK"] = a["href"]
-
-            ref_m = re.search(r"RAF/\d+/\d+", title)
-            if ref_m:
-                t["TENDER_ID"] = ref_m.group(0)
-
-            # Metadata in sibling <ul>
-            meta_ul = h.find_next_sibling(["ul", "p", "div"])
-            if meta_ul:
-                meta_text = meta_ul.get_text(" ", strip=True)
-
-                pub_m = re.search(
-                    r"[Pp]ublish(?:ed)?\s*[Dd]ate:?\s*"
-                    r"(\d{1,2}\s+[A-Za-z]+\s+\d{4}|\d{1,2}/\d{1,2}/\d{4})",
-                    meta_text,
-                )
-                if pub_m:
-                    pub = _parse_date(pub_m.group(1))
-                    if pub:
-                        if not self._in_range(pub):
-                            continue
-                        t["PUBLICATION_DATE"] = pub.strftime("%Y/%m/%d")
-
-                close_m = re.search(
-                    r"[Cc]losing\s*[Dd]ate:?\s*"
-                    r"(\d{1,2}\s+[A-Za-z]+\s+\d{4}|\d{1,2}/\d{1,2}/\d{4})",
-                    meta_text,
-                )
-                if close_m:
-                    t["CLOSING_DATE"], t["CLOSING_TIME"] = _parse_closing(close_m.group(1))
-
-            if not t["PUBLICATION_DATE"]:
-                t["PUBLICATION_DATE"] = ""
-
-            t["TENDER_TYPE"] = _infer_type(t["TENDER_DESCRIPTION"])
-            self.tenderData.append(t)
-
-        logging.info(f"RAF: {len(self.tenderData)} tender(s)")
+        logging.warning(
+            "RAF: portal is SharePoint-based and requires JavaScript to render "
+            "tender listings — static scraping not possible. "
+            "Manual monitoring at https://www.raf.co.za/procurement/Pages/Tenders-running.aspx"
+        )
         return self.tenderData
 
 
 class NMBMMScraper(_Base):
-    """https://www.nelsonmandelabay.gov.za/tenders/ — paginated table."""
+    """https://www.nelsonmandelabay.gov.za/tenders/ — multiple tables, one per tender type.
+    Each table: row[0]=section heading (e.g. 'FORMAL TENDERS'), row[1]=column headers,
+    row[2+]=data rows.  Columns: SCM No. | Tender Description | Tender Fee.
+    Closing dates and publication dates are NOT shown on the website listing.
+    """
     DEPARTMENT = "Nelson Mandela Bay Metropolitan Municipality"
     PROVINCE   = "Eastern Cape"
     SOURCE_KEY = "NELSONMANDELABAY.GOV.ZA"
@@ -665,69 +660,78 @@ class NMBMMScraper(_Base):
         logging.info("NMB MM: fetching tenders")
         base_url = "https://www.nelsonmandelabay.gov.za/tenders/"
         page = 1
+        seen_descs: set = set()
+
         while True:
             url = base_url if page == 1 else f"{base_url}?page={page}"
             soup = _get(url)
             if not soup:
                 break
 
-            table = soup.find("table")
-            if not table:
+            tables = soup.find_all("table")
+            if not tables:
                 break
-
-            rows = table.find_all("tr")
-            if not rows:
-                break
-
-            # Detect column indices from header
-            header = [th.get_text(strip=True).lower() for th in rows[0].find_all(["th", "td"])]
-            def _col(*keys):
-                for k in keys:
-                    for i, h in enumerate(header):
-                        if k in h:
-                            return i
-                return None
-
-            id_idx    = _col("number", "tender no", "id")
-            desc_idx  = _col("description", "subject")
-            pub_idx   = _col("publish", "advertis", "date")
-            close_idx = _col("closing", "close")
 
             found_any = False
-            for tr in rows[1:]:
-                tds = tr.find_all("td")
-                if not tds:
-                    continue
-                t = self._blank()
-
-                def _val(idx):
-                    return tds[idx].get_text(strip=True) if idx is not None and idx < len(tds) else ""
-
-                t["TENDER_ID"]          = _val(id_idx)
-                t["TENDER_DESCRIPTION"] = _val(desc_idx) or _val(1)
-                if not t["TENDER_DESCRIPTION"]:
+            for table in tables:
+                rows = table.find_all("tr")
+                if len(rows) < 3:
                     continue
 
-                pub = _parse_date(_val(pub_idx)) if pub_idx is not None else None
-                if pub:
-                    if not self._in_range(pub):
+                # Find the column header row — the row whose cells contain "description" / "scm"
+                header_idx = None
+                header: list = []
+                for i, tr in enumerate(rows[:3]):
+                    cells = [c.get_text(strip=True).lower() for c in tr.find_all(["th", "td"])]
+                    if any("description" in c or "scm" in c for c in cells):
+                        header_idx = i
+                        header = cells
+                        break
+                if header_idx is None:
+                    continue
+
+                def _col(*keys):
+                    for k in keys:
+                        for i, h in enumerate(header):
+                            if k in h:
+                                return i
+                    return None
+
+                id_idx   = _col("scm no", "scm", "tender no", "number", "ref")
+                desc_idx = _col("description", "subject")
+
+                for tr in rows[header_idx + 1:]:
+                    tds = tr.find_all("td")
+                    if not tds:
                         continue
-                    t["PUBLICATION_DATE"] = pub.strftime("%Y/%m/%d")
-                else:
-                    t["PUBLICATION_DATE"] = ""
 
-                if close_idx is not None:
-                    t["CLOSING_DATE"], t["CLOSING_TIME"] = _parse_closing(_val(close_idx))
+                    def _val(idx):
+                        return tds[idx].get_text(strip=True) if idx is not None and idx < len(tds) else ""
 
-                a = tr.find("a", href=True)
-                if a:
-                    t["LINK"] = a["href"]
+                    tender_id = _val(id_idx)
+                    desc      = _val(desc_idx) or (tds[1].get_text(strip=True) if len(tds) > 1 else "")
+                    if not desc:
+                        continue
 
-                t["TENDER_TYPE"] = _infer_type(t["TENDER_DESCRIPTION"])
-                self.tenderData.append(t)
-                found_any = True
+                    dedup_key = desc[:60].lower()
+                    if dedup_key in seen_descs:
+                        continue
+                    seen_descs.add(dedup_key)
 
-            # Check for next page link
+                    t = self._blank()
+                    t["TENDER_ID"]          = tender_id
+                    t["TENDER_DESCRIPTION"] = desc
+                    t["PUBLICATION_DATE"]   = ""
+                    # No closing date column on NMB website — field will be blank
+
+                    a = tr.find("a", href=True)
+                    if a:
+                        t["LINK"] = a["href"]
+
+                    t["TENDER_TYPE"] = _infer_type(desc)
+                    self.tenderData.append(t)
+                    found_any = True
+
             next_link = soup.find("a", string=re.compile(r"[Nn]ext|»|›"))
             if next_link and found_any:
                 page += 1
@@ -739,28 +743,41 @@ class NMBMMScraper(_Base):
 
 
 class DELScraper(_Base):
-    """https://www.labour.gov.za/tenders/available-tenders — SharePoint table."""
+    """https://www.labour.gov.za/tenders/available-tenders — SharePoint table.
+    Page renders two tables: Table 0 has a merged mega-cell in the header (SharePoint
+    accessibility row), Table 1 is the clean version.
+    Columns: (blank) | Tender Ref | Tender Description | Tender Location | Closing Date
+    Date format is DD/MM/YYYY (South African), closing time as HH:MM.
+    """
     DEPARTMENT = "Department of Employment and Labour"
     PROVINCE   = "National"
     SOURCE_KEY = "LABOUR.GOV.ZA"
+    _URL       = "https://www.labour.gov.za/tenders/available-tenders"
+    _BASE      = "https://www.labour.gov.za"
 
     def run(self):
         logging.info("DEL: fetching available tenders")
-        soup = _get("https://www.labour.gov.za/tenders/available-tenders")
+        soup = _get(self._URL)
         if not soup:
             return self.tenderData
 
-        # SharePoint list-view table
-        table = soup.find("table", id=re.compile(r"onetidDoclibViewTbl|MSODataTable", re.I))
-        if not table:
-            table = soup.find("table")
-        if not table:
-            logging.warning("DEL: no table found")
+        # Use the last table whose header row contains "tender ref" and "closing"
+        # (avoids the SharePoint merged-cell Table 0)
+        target = None
+        for table in soup.find_all("table"):
+            rows = table.find_all("tr")
+            if not rows:
+                continue
+            hdrs = [c.get_text(strip=True).lower() for c in rows[0].find_all(["th", "td"])]
+            if any("tender ref" in h for h in hdrs) or any("closing" in h for h in hdrs):
+                target = table
+
+        if not target:
+            logging.warning("DEL: no usable table found")
             return self.tenderData
 
-        rows = table.find_all("tr")
-        header = [th.get_text(strip=True).lower() for th in
-                  (rows[0].find_all(["th", "td"]) if rows else [])]
+        rows = target.find_all("tr")
+        header = [c.get_text(strip=True).lower() for c in rows[0].find_all(["th", "td"])]
 
         def _col(*keys):
             for k in keys:
@@ -769,10 +786,9 @@ class DELScraper(_Base):
                         return i
             return None
 
-        ref_idx   = _col("ref", "tender")
+        ref_idx   = _col("tender ref", "ref")
         desc_idx  = _col("description")
-        loc_idx   = _col("location", "province")
-        close_idx = _col("closing", "close")
+        close_idx = _col("closing")
 
         for tr in rows[1:]:
             tds = tr.find_all("td")
@@ -784,18 +800,17 @@ class DELScraper(_Base):
                 return tds[idx].get_text(strip=True) if idx is not None and idx < len(tds) else ""
 
             t["TENDER_ID"]          = _val(ref_idx)
-            t["TENDER_DESCRIPTION"] = _val(desc_idx) or _val(0)
+            t["TENDER_DESCRIPTION"] = _val(desc_idx)
             if not t["TENDER_DESCRIPTION"]:
                 continue
 
-            # Closing date — SharePoint stores as "MM/DD/YYYY HH:MM"
+            # Closing date — DEL stores as "DD/MM/YYYY HH:MM" (South African format)
             raw_close = _val(close_idx)
             if raw_close:
-                # Convert MM/DD/YYYY to something parseable
                 sp_m = re.match(r"(\d{1,2})/(\d{1,2})/(\d{4})\s*(\d{1,2}:\d{2})?", raw_close)
                 if sp_m:
                     try:
-                        cd = date(int(sp_m.group(3)), int(sp_m.group(1)), int(sp_m.group(2)))
+                        cd = date(int(sp_m.group(3)), int(sp_m.group(2)), int(sp_m.group(1)))
                         t["CLOSING_DATE"] = cd.strftime("%Y/%m/%d")
                         t["CLOSING_TIME"] = sp_m.group(4) or ""
                     except ValueError:
@@ -805,7 +820,11 @@ class DELScraper(_Base):
 
             a = tr.find("a", href=True)
             if a:
-                t["LINK"] = a["href"]
+                href = a["href"]
+                if href.startswith("/"):
+                    href = self._BASE + href
+                if not href.startswith("javascript"):
+                    t["LINK"] = href
 
             t["PUBLICATION_DATE"] = ""
             t["TENDER_TYPE"] = _infer_type(t["TENDER_DESCRIPTION"])
@@ -816,7 +835,12 @@ class DELScraper(_Base):
 
 
 class DIRCOScraper(_Base):
-    """https://dirco.gov.za/tenders — static HTML sections with pub date and closing date."""
+    """https://dirco.gov.za/tenders — Elementor-based page.
+    DIRCO uses Elementor text-editor widgets, not a standard content div.
+    Tenders appear as headings (h3/h4) inside Elementor widgets with sibling
+    paragraphs containing dates.  Page is genuinely empty until DIRCO lists
+    2026/27 tenders; scraper returns 0 correctly in that case.
+    """
     DEPARTMENT = "Department of International Relations and Cooperation"
     PROVINCE   = "National"
     SOURCE_KEY = "DIRCO.GOV.ZA"
@@ -827,112 +851,91 @@ class DIRCOScraper(_Base):
         if not soup:
             return self.tenderData
 
-        content = soup.find("div", class_=re.compile(r"entry|content|post-content", re.I))
-        if not content:
-            content = soup.find("main") or soup.body
+        # DIRCO uses Elementor — content is inside .elementor-widget-container divs,
+        # NOT inside a standard entry/content div.
+        # Collect all text from Elementor text-editor and heading widgets.
+        widgets = soup.find_all(
+            "div",
+            class_=re.compile(r"elementor-widget-(text-editor|heading)", re.I),
+        )
+        # Fall back to body if Elementor not found (future redesign resilience)
+        if not widgets:
+            widgets = [soup.find("main") or soup.body]
 
-        # Each tender is a section with a heading and paragraph blocks
-        seen = set()
-        for heading in content.find_all(["h2", "h3", "h4"]):
-            title = heading.get_text(strip=True)
-            if not title or len(title) < 5:
-                continue
-            if title.lower() in ("tenders", "current tenders", "archive"):
-                continue
+        seen: set = set()
+        for widget in widgets:
+            for heading in widget.find_all(["h3", "h4"]):
+                title = heading.get_text(strip=True)
+                if not title or len(title) < 10:
+                    continue
+                # Skip year-navigation and section headings
+                if re.match(r"DIRCO tenders for \d{4}", title, re.I):
+                    continue
 
-            t = self._blank()
-            t["TENDER_DESCRIPTION"] = title
+                t = self._blank()
+                t["TENDER_DESCRIPTION"] = title
 
-            # Reference number — "DIRCO 02 2026-2027"
-            ref_m = re.search(r"DIRCO\s*\d+\s*\d{4}[-/]\d{4}", title, re.I)
-            if ref_m:
-                t["TENDER_ID"] = ref_m.group(0)
+                # Reference: "DIRCO 02 2026-2027" or "DIRCO/02/2026-2027"
+                ref_m = re.search(r"DIRCO[\s/]*\d+[\s/]*\d{4}[-/]\d{4}", title, re.I)
+                if ref_m:
+                    t["TENDER_ID"] = ref_m.group(0).strip()
 
-            # Gather sibling text until next heading
-            text_parts = []
-            for sib in heading.next_siblings:
-                if sib.name in ("h2", "h3", "h4"):
-                    break
-                if hasattr(sib, "get_text"):
-                    text_parts.append(sib.get_text(" ", strip=True))
-            combined = " ".join(text_parts)
+                # Sibling paragraphs hold dates
+                text_parts = []
+                for sib in heading.next_siblings:
+                    if sib.name in ("h3", "h4"):
+                        break
+                    if hasattr(sib, "get_text"):
+                        text_parts.append(sib.get_text(" ", strip=True))
+                combined = " ".join(text_parts)
 
-            # Publication date
-            pub_m = re.search(
-                r"[Pp]ublish(?:ed)?\s*[Dd]ate:?\s*"
-                r"(\d{1,2}\s+[A-Za-z]+\s+\d{4}|\d{1,2}/\d{1,2}/\d{4})",
-                combined,
-            )
-            if pub_m:
-                pub = _parse_date(pub_m.group(1))
-                if pub:
-                    if not self._in_range(pub):
-                        continue
-                    t["PUBLICATION_DATE"] = pub.strftime("%Y/%m/%d")
-            if not t["PUBLICATION_DATE"]:
-                t["PUBLICATION_DATE"] = ""
+                pub_m = re.search(
+                    r"[Pp]ublish(?:ed)?\s*[Dd]ate:?\s*"
+                    r"(\d{1,2}\s+[A-Za-z]+\s+\d{4}|\d{1,2}/\d{1,2}/\d{4})",
+                    combined,
+                )
+                if pub_m:
+                    pub = _parse_date(pub_m.group(1))
+                    if pub:
+                        t["PUBLICATION_DATE"] = pub.strftime("%Y/%m/%d")
 
-            # Closing date
-            close_m = re.search(
-                r"[Cc]losing\s*[Dd]ate:?\s*"
-                r"(\d{1,2}\s+[A-Za-z]+\s+\d{4}|\d{1,2}/\d{1,2}/\d{4})"
-                r"(?:\s+at\s+(\d{1,2}h\d{2}))?",
-                combined,
-            )
-            if close_m:
-                t["CLOSING_DATE"], _ = _parse_closing(close_m.group(1))
-                t["CLOSING_TIME"] = close_m.group(2) or ""
+                close_m = re.search(
+                    r"[Cc]losing\s*[Dd]ate:?\s*"
+                    r"(\d{1,2}\s+[A-Za-z]+\s+\d{4}|\d{1,2}/\d{1,2}/\d{4})"
+                    r"(?:\s+at\s+(\d{1,2}h\d{2}))?",
+                    combined,
+                )
+                if close_m:
+                    t["CLOSING_DATE"], _ = _parse_closing(close_m.group(1))
+                    t["CLOSING_TIME"] = close_m.group(2) or ""
 
-            # PDF link
-            a = heading.find("a", href=True) or heading.find_next("a", href=re.compile(r"\.pdf", re.I))
-            if a:
-                t["LINK"] = a["href"]
+                a = heading.find("a", href=True) or widget.find("a", href=re.compile(r"\.pdf", re.I))
+                if a:
+                    t["LINK"] = a["href"]
 
-            dedup = title[:60].lower()
-            if dedup in seen:
-                continue
-            seen.add(dedup)
+                dedup = title[:60].lower()
+                if dedup in seen:
+                    continue
+                seen.add(dedup)
 
-            t["TENDER_TYPE"] = _infer_type(t["TENDER_DESCRIPTION"])
-            self.tenderData.append(t)
+                t["TENDER_TYPE"] = _infer_type(title)
+                self.tenderData.append(t)
 
-        logging.info(f"DIRCO: {len(self.tenderData)} tender(s)")
+        if not self.tenderData:
+            logging.info("DIRCO: no tenders listed on page (2026/27 section is currently empty)")
+        else:
+            logging.info(f"DIRCO: {len(self.tenderData)} tender(s)")
         return self.tenderData
 
 
 class DOJScraper(_Base):
-    """https://www.justice.gov.za/cfo_tender/tender.htm — awarded/extended tenders list."""
+    """https://www.justice.gov.za/cfo_tender/tender.htm — page only lists contract extensions, not open bids."""
     DEPARTMENT = "Department of Justice and Constitutional Development"
     PROVINCE   = "National"
     SOURCE_KEY = "JUSTICE.GOV.ZA"
 
     def run(self):
-        logging.info("DOJ: fetching tender page")
-        soup = _get("https://www.justice.gov.za/cfo_tender/tender.htm")
-        if not soup:
-            return self.tenderData
-
-        seen = set()
-        for strong in soup.find_all(["strong", "b"]):
-            ref = strong.get_text(strip=True)
-            if not re.search(r"RFQ|BID|DOJ|tender", ref, re.I):
-                continue
-            if ref in seen:
-                continue
-            seen.add(ref)
-
-            # Description from adjacent text
-            parent = strong.parent
-            desc = parent.get_text(" ", strip=True) if parent else ref
-
-            t = self._blank()
-            t["TENDER_ID"]          = ref
-            t["TENDER_DESCRIPTION"] = desc[:200]
-            t["PUBLICATION_DATE"]   = self.date_to.strftime("%Y/%m/%d")
-            t["TENDER_TYPE"]        = _infer_type(desc)
-            self.tenderData.append(t)
-
-        logging.info(f"DOJ: {len(self.tenderData)} tender(s)")
+        logging.info("DOJ: page contains no open tenders (contract extensions only) — skipping")
         return self.tenderData
 
 
@@ -944,8 +947,25 @@ class WJHBScraper(_Base):
 
     def run(self):
         logging.info("W JHB: fetching open tenders")
-        soup = _get("https://scm.johannesburgwater.co.za/supply-chain/tenders/all-open-tenders/")
-        if not soup:
+        import requests as _req
+        try:
+            r = _req.get(
+                "https://scm.johannesburgwater.co.za/supply-chain/tenders/all-open-tenders/",
+                headers={"User-Agent": "Mozilla/5.0"},
+                timeout=30,
+            )
+            if r.status_code == 403:
+                logging.warning(
+                    "W JHB: 403 Forbidden — IP blocked by WP Defender security plugin. "
+                    "Tenders skipped this run; block should auto-reset."
+                )
+                return self.tenderData
+            r.raise_for_status()
+            r.encoding = r.apparent_encoding or "utf-8"
+            from bs4 import BeautifulSoup as _BS
+            soup = _BS(r.text, "html.parser")
+        except Exception as e:
+            logging.error(f"W JHB: fetch failed — {e}")
             return self.tenderData
 
         table = soup.find("table")
@@ -1013,59 +1033,70 @@ class WJHBScraper(_Base):
 
 
 class SITAScraper(_Base):
-    """https://rfq.sita.co.za/TendersAdministration/invitations.asp — <dl>/<dt>/<dd> structure."""
+    """https://rfq.sita.co.za/TendersAdministration/invitations.asp
+    Page has 2 tables: table[0]=contact info, table[1]=tenders.
+    Tender table columns: Description | Tender Number | Closing Date(at 11:00) | Download Documents
+    The Description cell starts with 'Published Date: DD/MM/YYYY'.
+    """
     DEPARTMENT = "State Information Technology Agency"
     PROVINCE   = "National"
     SOURCE_KEY = "SITA.CO.ZA"
     _URL       = "https://rfq.sita.co.za/TendersAdministration/invitations.asp"
+    _BASE      = "https://rfq.sita.co.za/TendersAdministration/"
 
     def run(self):
-        logging.info("SITA: fetching legacy portal")
+        logging.info("SITA: fetching tender portal")
         soup = _get(self._URL)
         if not soup:
             return self.tenderData
 
-        for dl in soup.find_all("dl"):
-            dts = dl.find_all("dt")
-            dds = dl.find_all("dd")
-            if not dts:
+        tables = soup.find_all("table")
+        if len(tables) < 2:
+            logging.warning("SITA: expected 2 tables, got %d", len(tables))
+            return self.tenderData
+
+        tender_table = tables[1]
+        rows = tender_table.find_all("tr")
+        if not rows:
+            return self.tenderData
+
+        for tr in rows[1:]:  # skip header row
+            tds = tr.find_all("td")
+            if len(tds) < 3:
                 continue
 
-            data = {}
-            for dt, dd in zip(dts, dds):
-                key = dt.get_text(strip=True).lower().rstrip(":").strip()
-                data[key] = dd.get_text(strip=True)
+            desc_raw = tds[0].get_text(" ", strip=True)
+            tender_no = tds[1].get_text(strip=True)
+            close_raw = tds[2].get_text(strip=True)
 
-            desc = (data.get("tender description") or data.get("description") or "").strip()
+            # Extract "Published Date: DD/MM/YYYY" from start of description cell
+            pub = None
+            pub_m = re.search(r"Published Date:\s*(\d{2}/\d{2}/\d{4})", desc_raw, re.I)
+            if pub_m:
+                pub = _parse_date(pub_m.group(1))
+                desc = desc_raw[pub_m.end():].strip()
+            else:
+                desc = desc_raw.strip()
+
             if not desc:
                 continue
 
+            if pub and not self._in_range(pub):
+                continue
+
             t = self._blank()
+            t["TENDER_ID"]          = tender_no
             t["TENDER_DESCRIPTION"] = desc
-            t["TENDER_ID"] = (data.get("tender number") or data.get("rfb number")
-                              or data.get("reference") or "")
+            t["PUBLICATION_DATE"]   = pub.strftime("%Y/%m/%d") if pub else ""
 
-            pub_raw = data.get("published date") or data.get("publish date") or data.get("date") or ""
-            pub = _parse_date(pub_raw)
-            if pub:
-                if not self._in_range(pub):
-                    continue
-                t["PUBLICATION_DATE"] = pub.strftime("%Y/%m/%d")
-            else:
-                t["PUBLICATION_DATE"] = ""
+            cd = _parse_date(close_raw)
+            if cd:
+                t["CLOSING_DATE"] = cd.strftime("%Y/%m/%d")
+                t["CLOSING_TIME"] = "11:00"  # always 11:00 per column header
 
-            close_raw = data.get("closing date") or data.get("closing") or ""
-            if close_raw:
-                t["CLOSING_DATE"], t["CLOSING_TIME"] = _parse_closing(close_raw)
-
-            a = dl.find("a", href=True)
-            if a:
-                href = a["href"]
-                if not href.startswith("http"):
-                    href = "https://rfq.sita.co.za" + href
-                t["LINK"] = href
-
-            t["TENDER_TYPE"] = _infer_type(t["TENDER_DESCRIPTION"])
+            # Link: point to the portal page (documents require POST, no direct URL)
+            t["LINK"] = self._URL
+            t["TENDER_TYPE"] = _infer_type(desc)
             self.tenderData.append(t)
 
         logging.info(f"SITA: {len(self.tenderData)} tender(s)")
@@ -1105,12 +1136,18 @@ class GDoHScraper(_Base):
                 continue
 
             if len(tds) > 3:
-                briefing_raw = tds[3].get_text(strip=True)
-                if briefing_raw:
+                # Use space separator — cell may contain date, time, and "Compulsory" run together
+                briefing_raw = tds[3].get_text(" ", strip=True)
+                if briefing_raw.strip():
                     t["IS_THERE_A_BRIEFING_SESSION"] = "Yes"
                     bd = _parse_date(briefing_raw)
                     if bd:
                         t["BRIEFING_DATE"] = bd.strftime("%Y/%m/%d")
+                    # Extract compulsory flag embedded in the date cell
+                    if re.search(r"\bnon[- ]compulsory\b", briefing_raw, re.I):
+                        t["COMPULSORY_BRIEFING"] = "No"
+                    elif re.search(r"\bcompulsory\b", briefing_raw, re.I):
+                        t["COMPULSORY_BRIEFING"] = "Yes"
 
             if len(tds) > 4:
                 t["CLOSING_DATE"], t["CLOSING_TIME"] = _parse_closing(tds[4].get_text(strip=True))
@@ -1179,32 +1216,83 @@ class BuffaloCityMMScraper(_Base):
 
 
 class SIUScraper(_Base):
-    """https://www.siu.org.za/tenders/ — SSL cert issue; uses verify=False."""
+    """https://www.siu.org.za/current/
+    5-column table: TENDER No. | TENDER | BRIEFING SESSION INFO | DATE | VIEW
+    DATE column contains closing date (handles 'extended to' and 'Closes on' prefixes).
+    """
     DEPARTMENT = "Special Investigating Unit"
     PROVINCE   = "National"
     SOURCE_KEY = "SIU.ORG.ZA"
+    _URL       = "https://www.siu.org.za/current/"
 
     def run(self):
-        logging.info("SIU: fetching tenders (verify=False)")
+        logging.info("SIU: fetching current tenders")
         import urllib3
         urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
-        soup = _get("https://www.siu.org.za/tenders/", verify=False)
+        soup = _get(self._URL, verify=False)
         if not soup:
             return self.tenderData
 
-        # Try table first, then list
-        entries = soup.select("table tr") or soup.select("article, .post, li")
-        for entry in entries:
-            t = self._blank()
-            a = entry.find("a", href=True)
-            text = entry.get_text(" ", strip=True)
-            if not text or len(text) < 10:
+        table = soup.find("table")
+        if not table:
+            logging.warning("SIU: no table found on page")
+            return self.tenderData
+
+        rows = table.find_all("tr")
+        for tr in rows[1:]:  # skip header
+            tds = tr.find_all(["td", "th"])
+            if len(tds) < 4:
                 continue
-            t["TENDER_DESCRIPTION"] = text[:300]
-            if a:
-                t["LINK"] = a["href"]
-            t["PUBLICATION_DATE"] = ""
-            t["TENDER_TYPE"] = _infer_type(t["TENDER_DESCRIPTION"])
+
+            tender_no  = tds[0].get_text(strip=True)
+            desc       = tds[1].get_text(" ", strip=True)
+            briefing   = tds[2].get_text(" ", strip=True)
+            date_text  = tds[3].get_text(" ", strip=True)
+
+            if not desc or not tender_no:
+                continue
+
+            t = self._blank()
+            t["TENDER_ID"]          = tender_no
+            t["TENDER_DESCRIPTION"] = desc
+            t["PUBLICATION_DATE"]   = ""  # not published on page
+
+            # Closing date: prefer "extended to X" if present, else first date found
+            ext_m = re.search(
+                r"extended to\s+(\d{1,2}\s+[A-Za-z]+\s+\d{4})\s*@\s*(\d{1,2}[h:]\d{2}(?:\s*[AaPp][Mm])?)",
+                date_text, re.I
+            )
+            if ext_m:
+                cd = _parse_date(ext_m.group(1))
+                if cd:
+                    t["CLOSING_DATE"] = cd.strftime("%Y/%m/%d")
+                    t["CLOSING_TIME"] = ext_m.group(2)
+            else:
+                # "Closes on X" or "X @ Y"
+                plain = re.sub(r"[Cc]loses?\s+on\s+", "", date_text)
+                t["CLOSING_DATE"], t["CLOSING_TIME"] = _parse_closing(plain)
+
+            # Briefing info
+            if briefing and briefing.upper() not in ("N/A", "NA", ""):
+                brie_m = re.search(
+                    r"(\d{1,2}\s+[A-Za-z]+\s+\d{4})\s*@?\s*(\d{1,2}[h:]\d{2})",
+                    briefing, re.I
+                )
+                if brie_m:
+                    bd = _parse_date(brie_m.group(1))
+                    if bd:
+                        t["BRIEFING_DATE"]              = bd.strftime("%Y/%m/%d")
+                        t["IS_THERE_A_BRIEFING_SESSION"] = "Yes"
+                        compulsory = "non-compulsory" not in briefing.lower() and "compulsory" in briefing.lower()
+                        t["COMPULSORY_BRIEFING"] = "Yes" if compulsory else "No"
+
+            # First PDF/doc link in VIEW column
+            if len(tds) > 4:
+                a = tds[4].find("a", href=True)
+                if a:
+                    t["LINK"] = a["href"]
+
+            t["TENDER_TYPE"] = _infer_type(desc)
             self.tenderData.append(t)
 
         logging.info(f"SIU: {len(self.tenderData)} tender(s)")
@@ -1217,7 +1305,7 @@ class SIUScraper(_Base):
 # Blocked sites (Eskom=403, Transnet=ECONNREFUSED) are excluded.
 # Selenium-required sites (SITA, Amahlathi, GDoH, Buffalo City) are excluded.
 SCRAPER_REGISTRY: dict = {
-    "Matatiele LM":          MatatieleScraper,
+    "Matatiele LM":          MatatieleScraper,   # stub — JS-required; real scraper is Selenium
     "Ntabankulu LM":         NtabankuluScraper,
     "Umzimvubu LM":          UmzimvubuScraper,
     "Winnie Mandela LM":     WinnieMMLScraper,
@@ -1225,7 +1313,7 @@ SCRAPER_REGISTRY: dict = {
     "Great Kei LM":          GreatKeiScraper,
     "JOSHCO":                JOSHCOScraper,
     "GPL":                   GPLScraper,
-    "RAF":                   RAFScraper,
+    "RAF":                   RAFScraper,          # stub — SharePoint JS-required
     "Nelson Mandela Bay MM": NMBMMScraper,
     "DEL":                   DELScraper,
     "DIRCO":                 DIRCOScraper,
@@ -1234,16 +1322,20 @@ SCRAPER_REGISTRY: dict = {
     "SIU":                   SIUScraper,
     "SITA":                  SITAScraper,
     "GDoH":                  GDoHScraper,
-    "Buffalo City MM":       BuffaloCityMMScraper,
+    # Buffalo City MM removed — site offline (all paths return 404)
 }
 
 _BLOCKED = {
-    "Eskom":   "403 Forbidden (WAF/Cloudflare) — manual monitoring required",
-    "Transnet": "ECONNREFUSED — portal may be IP-restricted",
+    "Eskom":          "403 Forbidden (WAF/Cloudflare) — manual monitoring required",
+    "Transnet":       "ECONNREFUSED — portal may be IP-restricted",
+    "Buffalo City MM": (
+        "buffalocity.gov.za serving IIS placeholder on all paths (all URLs return 404) — "
+        "site appears to have been migrated or is offline"
+    ),
 }
 
 # Selenium-based scrapers handled in SeleniumWatchlistScrapers.py
-_SELENIUM_HANDLED = {"Amahlathi LM", "CP JHB"}
+_SELENIUM_HANDLED = {"Amahlathi LM", "CP JHB", "Matatiele LM"}
 
 
 def run_watchlist_scrapers(date_from: str, date_to: str,
