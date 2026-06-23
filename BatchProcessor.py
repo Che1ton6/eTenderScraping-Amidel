@@ -95,8 +95,11 @@ def create_batch_folder(date_from: str, date_to: str, batch_type: str,
     import shutil
     root = os.path.join(root_dir, label)
     if os.path.exists(root):
-        shutil.rmtree(root)
-        logging.info(f"Existing batch folder removed for re-scrape: {root}")
+        try:
+            shutil.rmtree(root)
+            logging.info(f"Existing batch folder removed for re-scrape: {root}")
+        except PermissionError:
+            logging.warning(f"Could not delete existing batch folder (files open?); will overwrite in place: {root}")
     os.makedirs(os.path.join(root, "batches"),          exist_ok=True)
     os.makedirs(os.path.join(root, "end product"),      exist_ok=True)
     os.makedirs(os.path.join(root, "Display Equation"), exist_ok=True)
