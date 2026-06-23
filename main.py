@@ -437,6 +437,18 @@ class App(tk.Tk):
             self.status_var.set(f"Scraping {date_from} → {date_to}…")
             threading.Thread(target=self._run, args=(date_from, date_to), daemon=True).start()
 
+    @staticmethod
+    def _closing_not_expired(tender: dict, date_from: str) -> bool:
+        """Return False if the tender has a closing date that predates the batch start."""
+        cd = str(tender.get("CLOSING_DATE") or "").strip()
+        if not cd:
+            return True
+        try:
+            cd_date = datetime.strptime(cd, "%Y/%m/%d").date()
+            return cd_date >= datetime.strptime(date_from, "%Y-%m-%d").date()
+        except ValueError:
+            return True
+
     def _run(self, date_from, date_to):
         end_product_path = None
         equation_updated = False
@@ -472,14 +484,15 @@ class App(tk.Tk):
                 if scraper.tenderData:
                     all_tenders.extend(scraper.tenderData)
 
-            raw_tenders   = list(all_tenders)
-            raw_count     = len(all_tenders)
-            all_tenders   = [t for t in all_tenders
-                             if str(t.get("PUBLICATION_DATE") or "").strip()]
+            raw_tenders     = list(all_tenders)
+            raw_count       = len(all_tenders)
+            all_tenders     = [t for t in all_tenders
+                               if str(t.get("PUBLICATION_DATE") or "").strip()
+                               and self._closing_not_expired(t, date_from)]
             undated_removed = raw_count - len(all_tenders)
-            pre_dedup     = len(all_tenders)
-            all_tenders   = deduplicate_tenders(all_tenders)
-            dupes_removed = pre_dedup - len(all_tenders)
+            pre_dedup       = len(all_tenders)
+            all_tenders     = deduplicate_tenders(all_tenders)
+            dupes_removed   = pre_dedup - len(all_tenders)
 
             if all_tenders:
                 df = pd.DataFrame(all_tenders)
@@ -626,7 +639,8 @@ class App(tk.Tk):
             raw_tenders     = list(all_tenders)
             raw_count       = len(all_tenders)
             all_tenders     = [t for t in all_tenders
-                               if str(t.get("PUBLICATION_DATE") or "").strip()]
+                               if str(t.get("PUBLICATION_DATE") or "").strip()
+                               and self._closing_not_expired(t, date_from)]
             undated_removed = raw_count - len(all_tenders)
             pre_dedup       = len(all_tenders)
             all_tenders     = deduplicate_tenders(all_tenders)
