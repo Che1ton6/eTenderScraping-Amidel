@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Watchlist website scrapers — all static HTML / requests+BS4 sites.
-Selenium-required sites (SITA, Amahlathi, GDoH, Buffalo City) are excluded here.
+Selenium-required sites (Amahlathi, GDoH) are excluded here.
 Blocked sites (Eskom=403, Transnet=ECONNREFUSED) are logged and skipped.
 
 SCRAPER_REGISTRY maps Websites.xlsx source names to scraper classes.
@@ -317,8 +317,6 @@ class WinnieMMLScraper(_Base):
             if advert_idx is not None and advert_idx < len(tds):
                 pub = _parse_date(tds[advert_idx].get_text(strip=True))
                 if pub:
-                    if not self._in_range(pub):
-                        continue
                     t["PUBLICATION_DATE"] = pub.strftime("%Y/%m/%d")
             if not t["PUBLICATION_DATE"]:
                 t["PUBLICATION_DATE"] = ""
@@ -1174,7 +1172,7 @@ class BuffaloCityMMScraper(_Base):
     def run(self):
         year = self.date_to.year
         for type_param, tender_type in self._TYPES:
-            url = (f"https://www.buffalocity.gov.za/tender_documents.php"
+            url = (f"http://www.buffalocity.gov.za/tender_documents.php"
                    f"?year={year}&type={type_param}")
             logging.info(f"Buffalo City: fetching {url}")
             soup = _get(url)
@@ -1204,7 +1202,7 @@ class BuffaloCityMMScraper(_Base):
                 if a:
                     href = a["href"]
                     if not href.startswith("http"):
-                        href = "https://www.buffalocity.gov.za/" + href.lstrip("/")
+                        href = "http://www.buffalocity.gov.za/" + href.lstrip("/")
                     t["LINK"] = href
 
                 t["PUBLICATION_DATE"] = ""
@@ -1303,7 +1301,7 @@ class SIUScraper(_Base):
 
 # Maps source names from Websites.xlsx to scraper classes.
 # Blocked sites (Eskom=403, Transnet=ECONNREFUSED) are excluded.
-# Selenium-required sites (SITA, Amahlathi, GDoH, Buffalo City) are excluded.
+# Selenium-required sites (Amahlathi, CP JHB, Matatiele) are handled in SeleniumWatchlistScrapers.
 SCRAPER_REGISTRY: dict = {
     "Matatiele LM":          MatatieleScraper,   # stub — JS-required; real scraper is Selenium
     "Ntabankulu LM":         NtabankuluScraper,
@@ -1322,16 +1320,12 @@ SCRAPER_REGISTRY: dict = {
     "SIU":                   SIUScraper,
     "SITA":                  SITAScraper,
     "GDoH":                  GDoHScraper,
-    # Buffalo City MM removed — site offline (all paths return 404)
+    "Buffalo City MM":       BuffaloCityMMScraper,
 }
 
 _BLOCKED = {
-    "Eskom":          "403 Forbidden (WAF/Cloudflare) — manual monitoring required",
-    "Transnet":       "ECONNREFUSED — portal may be IP-restricted",
-    "Buffalo City MM": (
-        "buffalocity.gov.za serving IIS placeholder on all paths (all URLs return 404) — "
-        "site appears to have been migrated or is offline"
-    ),
+    "Eskom":    "403 Forbidden (WAF/Cloudflare) — manual monitoring required",
+    "Transnet": "ECONNREFUSED — portal may be IP-restricted",
 }
 
 # Selenium-based scrapers handled in SeleniumWatchlistScrapers.py

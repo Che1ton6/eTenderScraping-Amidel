@@ -428,12 +428,19 @@ class TenderScraper:
                 break
 
         # Continue if we found in-range tenders, or if no too-old tenders yet (still in future dates).
-        # Stop only when the page is entirely older than our date range.
+        # Allow one extra page of tolerance before stopping, in case the DataTable sort
+        # has a slight gap between the date range boundary and the next page.
         if found_in_range:
+            self._consecutive_too_old_pages = 0
             return True
         if found_too_old:
-            logging.info("Page contained tenders older than date range — stopping pagination")
-            return False
+            self._consecutive_too_old_pages = getattr(self, "_consecutive_too_old_pages", 0) + 1
+            if self._consecutive_too_old_pages >= 2:
+                logging.info("2 consecutive pages older than date range — stopping pagination")
+                return False
+            logging.info("Page had no in-range tenders (all too old) — trying one more page")
+            return True
+        self._consecutive_too_old_pages = 0
         return True  # Page was all too-new — keep paginating toward older dates
     
     def goToNextPage(self) -> bool:

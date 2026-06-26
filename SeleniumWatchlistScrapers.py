@@ -98,16 +98,41 @@ def scrape_amahlathi(date_from: str, date_to: str, log_queue=None) -> List[dict]
         for card in cards:
             try:
                 heading = None
-                for tag in ("h3", "h2", "h4"):
+                # Try tribe events title class first (The Events Calendar plugin)
+                for css in (".tribe-events-list-event-title",
+                            ".tribe-event-title",
+                            ".entry-title"):
                     try:
-                        heading = card.find_element(By.TAG_NAME, tag)
+                        heading = card.find_element(By.CSS_SELECTOR, css)
                         break
                     except NoSuchElementException:
                         continue
+                # Fall back to standard heading tags
                 if not heading:
-                    continue
+                    for tag in ("h3", "h2", "h4"):
+                        try:
+                            heading = card.find_element(By.TAG_NAME, tag)
+                            break
+                        except NoSuchElementException:
+                            continue
 
-                desc = heading.text.strip()
+                desc = ""
+                if heading:
+                    # Tribe events wraps title in an <a>; get the anchor text first
+                    try:
+                        a_el = heading.find_element(By.TAG_NAME, "a")
+                        desc = a_el.text.strip() or a_el.get_attribute("title") or ""
+                    except NoSuchElementException:
+                        desc = heading.text.strip()
+
+                # Last resort: first anchor in the card
+                if not desc:
+                    try:
+                        a_el = card.find_element(By.TAG_NAME, "a")
+                        desc = a_el.text.strip() or a_el.get_attribute("title") or ""
+                    except NoSuchElementException:
+                        pass
+
                 if not desc or desc in seen:
                     continue
                 seen.add(desc)
@@ -156,6 +181,66 @@ def scrape_amahlathi(date_from: str, date_to: str, log_queue=None) -> List[dict]
             except Exception:
                 pass
 
+    # Second pass: scrape the Events Calendar category page directly so that
+    # re-adverts (published under /event/ URLs, outside the "Open" tab) are not missed.
+    events_driver = None
+    try:
+        events_driver = _make_driver()
+        events_driver.get("https://amahlathi.gov.za/events/category/tenders/list/")
+        time.sleep(5)
+
+        from bs4 import BeautifulSoup as _BS4
+        soup2 = _BS4(events_driver.page_source, "html.parser")
+
+        existing_descs = {t["TENDER_DESCRIPTION"].lower() for t in tenders}
+        for article in soup2.select("article, .tribe-event, .tribe-events-list-event"):
+            try:
+                heading = (
+                    article.find(class_="tribe-events-list-event-title")
+                    or article.find(class_="tribe-event-title")
+                    or article.find(["h2", "h3", "h4"])
+                )
+                if not heading:
+                    continue
+                a_el = heading.find("a")
+                desc = (a_el.get_text(strip=True) if a_el else heading.get_text(strip=True))
+                if not desc or desc.lower() in existing_descs:
+                    continue
+                existing_descs.add(desc.lower())
+
+                t2 = _blank(report_date, "Amahlathi Local Municipality", "Eastern Cape",
+                            "AMAHLATHI.GOV.ZA")
+                t2["TENDER_DESCRIPTION"] = desc
+                t2["TENDER_TYPE"]        = _infer_type(desc)
+                if a_el:
+                    t2["LINK"] = a_el.get("href", "")
+
+                text2 = article.get_text(" ", strip=True)
+                close_m2 = re.search(
+                    r"[Cc]los(?:ing|ed?)\s*(?:[Dd]ate)?:?\s*"
+                    r"(\d{1,2}\s+[A-Za-z]+\s+\d{4}|\d{1,2}/\d{1,2}/\d{4})"
+                    r"(?:\s*[-–]\s*(\d{1,2}:\d{2}(?:\s*[AaPp][Mm])?))?",
+                    text2,
+                )
+                if close_m2:
+                    cd2 = _parse_date(close_m2.group(1))
+                    if cd2:
+                        t2["CLOSING_DATE"] = cd2.strftime("%Y/%m/%d")
+                    t2["CLOSING_TIME"] = close_m2.group(2) or ""
+
+                tenders.append(t2)
+            except Exception as e:
+                logging.debug(f"Amahlathi events-page card error: {e}")
+
+    except Exception as e:
+        logging.warning(f"Amahlathi events-page scrape failed: {e}")
+    finally:
+        if events_driver:
+            try:
+                events_driver.quit()
+            except Exception:
+                pass
+
     logging.info(f"Amahlathi LM: {len(tenders)} tender(s)")
     return tenders
 
@@ -186,6 +271,26 @@ def scrape_matatiele(date_from: str, date_to: str, log_queue=None) -> List[dict]
         except TimeoutException:
             logging.warning("Matatiele: timed out waiting for job listings — scraping what loaded")
         time.sleep(3)
+
+        # WP Job Manager "Load more jobs" pagination — click until exhausted
+        for _attempt in range(40):
+            try:
+                load_more = driver.find_element(
+                    By.CSS_SELECTOR,
+                    "a.load_more_jobs, .load_more_jobs, a[class*='load_more'], "
+                    "button.load_more_jobs, .job_listings_pagination a",
+                )
+                if load_more.is_displayed() and load_more.is_enabled():
+                    driver.execute_script("arguments[0].click();", load_more)
+                    time.sleep(3)
+                    logging.info(f"Matatiele: loaded more jobs (attempt {_attempt + 1})")
+                else:
+                    break
+            except NoSuchElementException:
+                break
+            except Exception as e:
+                logging.debug(f"Matatiele load-more error: {e}")
+                break
 
         from bs4 import BeautifulSoup
         soup = BeautifulSoup(driver.page_source, "html.parser")
