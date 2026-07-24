@@ -20,12 +20,12 @@ from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.common.exceptions import TimeoutException, NoSuchElementException
 
-from WatchlistScrapers import _parse_date, _parse_closing, _infer_type
+from WatchlistScrapers import _parse_date, _parse_closing, _infer_type, wp_pub_date_from_url
 
 
 def _make_driver(ignore_ssl: bool = False) -> webdriver.Chrome:
     opts = Options()
-    opts.add_argument("--headless=new")
+    # opts.add_argument("--headless=new")  # visible mode — user requested to watch scraping
     opts.add_argument("--no-sandbox")
     opts.add_argument("--disable-dev-shm-usage")
     opts.add_argument("--disable-gpu")
@@ -153,6 +153,20 @@ def scrape_amahlathi(date_from: str, date_to: str, log_queue=None) -> List[dict]
                         t["LINK"] = a.get_attribute("href") or ""
                     except NoSuchElementException:
                         pass
+
+                # Fallback publication date from URL patterns (WP /uploads/YYYY/MM/, /YYYY/MM/DD/, /YYYY/MM/)
+                if not t["PUBLICATION_DATE"] and t["LINK"]:
+                    url_pub = wp_pub_date_from_url(t["LINK"], date_from, date_to)
+                    if url_pub:
+                        try:
+                            pd_ = datetime.strptime(url_pub, "%Y/%m/%d").date()
+                            df_ = datetime.strptime(date_from, "%Y-%m-%d").date()
+                            dt_ = datetime.strptime(date_to,   "%Y-%m-%d").date()
+                            if not (df_ <= pd_ <= dt_):
+                                continue
+                            t["PUBLICATION_DATE"] = url_pub
+                        except ValueError:
+                            pass
 
                 # Closing date from card text
                 card_text = card.text
@@ -315,8 +329,9 @@ def scrape_matatiele(date_from: str, date_to: str, log_queue=None) -> List[dict]
             t["TENDER_TYPE"]        = _infer_type(desc)
 
             a = item.find("a", href=True)
-            if a:
-                t["LINK"] = a["href"]
+            link = a["href"] if a else ""
+            if link:
+                t["LINK"] = link
 
             text = item.get_text(" ", strip=True)
             close_m = re.search(
@@ -328,6 +343,41 @@ def scrape_matatiele(date_from: str, date_to: str, log_queue=None) -> List[dict]
                 cd = _parse_date(close_m.group(1))
                 if cd:
                     t["CLOSING_DATE"] = cd.strftime("%Y/%m/%d")
+
+            # Fetch individual page for publication date ("Posted on June 11, 2026")
+            if link:
+                try:
+                    import requests as _req
+                    from bs4 import BeautifulSoup as _BS
+                    resp = _req.get(link, headers={"User-Agent": "Mozilla/5.0"}, timeout=15)
+                    if resp.ok:
+                        detail = _BS(resp.text, "html.parser")
+                        posted = detail.find(string=re.compile(r"Posted on", re.I))
+                        if posted:
+                            pub_m = re.search(
+                                r"Posted\s+on\s+([A-Za-z]+\s+\d{1,2},?\s+\d{4}|\d{1,2}\s+[A-Za-z]+\s+\d{4})",
+                                str(posted.parent), re.I
+                            )
+                            if pub_m:
+                                pd = _parse_date(pub_m.group(1))
+                                if pd:
+                                    t["PUBLICATION_DATE"] = pd.strftime("%Y/%m/%d")
+                except Exception as _e:
+                    logging.debug(f"Matatiele: could not fetch detail page {link}: {_e}")
+
+            # Fallback publication date via URL patterns
+            if not t["PUBLICATION_DATE"] and link:
+                url_pub = wp_pub_date_from_url(link, date_from, date_to)
+                if url_pub:
+                    try:
+                        pd_ = datetime.strptime(url_pub, "%Y/%m/%d").date()
+                        df_ = datetime.strptime(date_from, "%Y-%m-%d").date()
+                        dt_ = datetime.strptime(date_to,   "%Y-%m-%d").date()
+                        if not (df_ <= pd_ <= dt_):
+                            continue
+                        t["PUBLICATION_DATE"] = url_pub
+                    except ValueError:
+                        pass
 
             tenders.append(t)
 

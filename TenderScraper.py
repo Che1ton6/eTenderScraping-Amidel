@@ -80,7 +80,7 @@ class TenderScraper:
         root_logger = logging.getLogger()
         root_logger.handlers.clear()
         root_logger.setLevel(getattr(logging, loggingConfig.get('level', 'INFO')))
-        root_logger.addHandler(logging.FileHandler(log_file))
+        root_logger.addHandler(logging.FileHandler(log_file, encoding='utf-8'))
 
         if log_queue is not None:
             import queue as _queue

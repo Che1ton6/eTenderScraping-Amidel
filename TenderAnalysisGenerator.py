@@ -152,7 +152,6 @@ SOURCE_FIELD_NOTES: dict[str, dict[str, str]] = {
     # ── Eastern Cape municipalities ───────────────────────────────────────────
     "MATATIELE.GOV.ZA": {
         "TENDER_ID":        "Matatiele website listing does not show tender reference numbers",
-        "PUBLICATION_DATE": "Matatiele website does not list publication dates",
         "CLOSING_TIME":     "Matatiele website does not list closing times",
         "CATEGORY":         "Matatiele website does not categorise tenders",
     },
@@ -304,14 +303,14 @@ _DEBATABLE_FONT = Font(bold=True, color="9C6500")
 _MAYBE_FILL    = PatternFill("solid", fgColor="FFEB9C")
 _MAYBE_FONT    = Font(bold=True, color="9C6500")
 
-_COL_WIDTHS = [4, 22, 24, 46, 14, 22, 15, 20, 15, 11, 30, 15, 55]
+_COL_WIDTHS = [4, 22, 24, 46, 14, 22, 15, 20, 15, 11, 30, 45, 15, 55]
 _WRAP       = Alignment(wrap_text=True, vertical="top")
 _CENTRE     = Alignment(horizontal="center", vertical="top")
 
 _ANALYSIS_HEADERS = [
     "#", "Tender ID", "Department", "Description", "Province", "Category",
     "Publication Date", "Closing Date", "Briefing Date", "Compulsory",
-    "Briefing Venue", "Should we Submit?", "Explanation",
+    "Briefing Venue", "URL", "Should we Submit?", "Explanation",
 ]
 
 # Fields aligned to _ANALYSIS_HEADERS; None = handled specially in loop
@@ -327,8 +326,9 @@ _ANALYSIS_FIELDS = [
     "BRIEFING_DATE",        # col 9
     "COMPULSORY_BRIEFING",  # col 10
     "BRIEFING_SESSION_VENUE", # col 11
-    None,                   # col 12: Should we Submit? — left blank for Claude
-    None,                   # col 13: Explanation — left blank for Claude
+    "LINK",                 # col 12: URL / tender portal link
+    None,                   # col 13: Should we Submit? — left blank for Claude
+    None,                   # col 14: Explanation — left blank for Claude
 ]
 
 
@@ -403,7 +403,7 @@ def _write_analysis_sheet(wb: Workbook, sheet_name: str,
                 # Row number
                 cell.value = i + 1
 
-            elif col_idx in (12, 13):
+            elif col_idx in (13, 14):
                 # "Should we Submit?" and "Explanation" — left blank for Claude to complete
                 cell.value = ""
 
@@ -436,6 +436,17 @@ def _write_analysis_sheet(wb: Workbook, sheet_name: str,
                     cell.value = val
                 else:
                     cell.value = _field_value(row.to_dict(), field, source_key, has_briefing)
+                    cell.font = Font(size=9, color="808080", italic=True)
+
+            elif field == "LINK":
+                raw = str(row.get("LINK") or "").strip()
+                if raw and raw.startswith("http"):
+                    cell.value = raw
+                    cell.hyperlink = raw
+                    cell.style = "Hyperlink"
+                    cell.alignment = _WRAP
+                else:
+                    cell.value = "Not found on page"
                     cell.font = Font(size=9, color="808080", italic=True)
 
             elif field is not None:

@@ -60,7 +60,7 @@ class ECDPWScraper:
         if not root.handlers:
             os.makedirs("logs", exist_ok=True)
             root.setLevel(logging.INFO)
-            root.addHandler(logging.FileHandler("logs/scraper.log"))
+            root.addHandler(logging.FileHandler("logs/scraper.log", encoding='utf-8'))
 
         if log_queue is not None:
             class _QueueHandler(logging.Handler):
@@ -389,13 +389,17 @@ class ECDPWScraper:
         return None
 
     def applyPublicationDateFilter(self):
-        """Remove tenders published before self.pub_date_from (if set)."""
+        """Remove tenders published before self.pub_date_from (if set).
+        Tenders with no publication date are always kept — errata and
+        quotation-only listings often omit it, and dropping them silently
+        would cause missed tenders."""
         if not self.pub_date_from:
             return
         before = len(self.tenderData)
         self.tenderData = [
             t for t in self.tenderData
-            if (self._parsePubDate(t.get("PUBLICATION_DATE", "")) or date.min) >= self.pub_date_from
+            if (pub := self._parsePubDate(t.get("PUBLICATION_DATE", ""))) is None
+            or pub >= self.pub_date_from
         ]
         removed = before - len(self.tenderData)
         if removed:

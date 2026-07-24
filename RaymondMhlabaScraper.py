@@ -47,7 +47,7 @@ class RaymondMhlabaScraper:
         if not root.handlers:
             os.makedirs("logs", exist_ok=True)
             root.setLevel(logging.INFO)
-            root.addHandler(logging.FileHandler("logs/scraper.log"))
+            root.addHandler(logging.FileHandler("logs/scraper.log", encoding='utf-8'))
 
         if log_queue is not None:
             class _QueueHandler(logging.Handler):

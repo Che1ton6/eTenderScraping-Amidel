@@ -12,21 +12,29 @@ from openpyxl.utils import get_column_letter
 sys.path.insert(0, os.path.dirname(__file__))
 from BatchProcessor import SOURCES, calculate_counts
 
-DATA_DIR      = os.path.join(os.path.dirname(__file__), "data")
-POWER_BI_FILE = r"C:\eTenderData\eTender_PowerBI_Data.xlsx"
-PBI_COLUMNS   = ["BATCH_LABEL", "BATCH_TYPE", "REPORT_DATE", "SOURCE", "NNT", "ICT", "RFQ"]
+DATA_DIR      = os.path.join(os.path.dirname(__file__), "data", "All_Tenders")
+POWER_BI_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "eTender_PowerBI_Data.xlsx")
+PBI_COLUMNS   = ["BATCH_LABEL", "BATCH_TYPE", "BATCH_START_DATE", "BATCH_SORT_KEY", "REPORT_DATE", "SOURCE", "NNT", "ICT", "RFQ"]
 HDR_FONT      = Font(bold=True, color="FFFFFF")
 HDR_FILL      = PatternFill("solid", fgColor="1F4E79")
 
 
 def parse_folder(name):
+    # Same-month: (M) 2-5 July 2026
     m = re.match(r"\(([MT])\)\s+(\d+)-(\d+)\s+(\w+)\s+(\d{4})", name)
-    if not m:
-        return None
-    btype, d1, d2, month_name, year = m.groups()
-    end   = datetime.strptime(f"{d2} {month_name} {year}", "%d %B %Y")
-    start = end.replace(day=int(d1))
-    return btype, start, end
+    if m:
+        btype, d1, d2, month_name, year = m.groups()
+        end   = datetime.strptime(f"{d2} {month_name} {year}", "%d %B %Y")
+        start = end.replace(day=int(d1))
+        return btype, start, end
+    # Cross-month: (T) 29 Jun-01 Jul 2026
+    m = re.match(r"\(([MT])\)\s+(\d+)\s+(\w+)-(\d+)\s+(\w+)\s+(\d{4})", name)
+    if m:
+        btype, d1, m1, d2, m2, year = m.groups()
+        start = datetime.strptime(f"{d1} {m1} {year}", "%d %b %Y")
+        end   = datetime.strptime(f"{d2} {m2} {year}", "%d %b %Y")
+        return btype, start, end
+    return None
 
 
 all_rows = []
@@ -60,13 +68,15 @@ for folder_name in sorted(os.listdir(DATA_DIR)):
         for source, _ in SOURCES:
             data = day_counts.get(source, {"NNT": 0, "ICT": 0, "RFQ": 0})
             all_rows.append({
-                "BATCH_LABEL": batch_label,
-                "BATCH_TYPE":  btype,
-                "REPORT_DATE": current,
-                "SOURCE":      source,
-                "NNT":         data["NNT"],
-                "ICT":         data["ICT"],
-                "RFQ":         data["RFQ"],
+                "BATCH_LABEL":      batch_label,
+                "BATCH_TYPE":       btype,
+                "BATCH_START_DATE": start,
+                "BATCH_SORT_KEY":   -start.toordinal(),
+                "REPORT_DATE":      current,
+                "SOURCE":           source,
+                "NNT":              data["NNT"],
+                "ICT":              data["ICT"],
+                "RFQ":              data["RFQ"],
             })
         current += timedelta(days=1)
 
@@ -88,7 +98,7 @@ for row_idx, row in enumerate(combined.itertuples(index=False), 2):
     for col_idx, col_name in enumerate(PBI_COLUMNS, 1):
         value = getattr(row, col_name)
         cell = ws.cell(row=row_idx, column=col_idx, value=value)
-        if col_name == "REPORT_DATE" and hasattr(value, "strftime"):
+        if col_name in ("REPORT_DATE", "BATCH_START_DATE") and hasattr(value, "strftime"):
             cell.number_format = "YYYY/MM/DD"
 
 last_col = get_column_letter(len(PBI_COLUMNS))

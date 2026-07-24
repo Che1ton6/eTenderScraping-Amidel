@@ -11,7 +11,7 @@ Call run_watchlist_scrapers() from main.py to execute all applicable scrapers.
 import logging
 import os
 import re
-from datetime import datetime, date
+from datetime import datetime, date, timedelta
 from typing import Optional, List
 
 import requests
@@ -92,6 +92,136 @@ def _infer_type(description: str) -> str:
     return "Request for Bid"
 
 
+def _snapshot_dir() -> str:
+    here = os.path.dirname(os.path.abspath(__file__))
+    d = os.path.join(here, "data", "snapshots")
+    os.makedirs(d, exist_ok=True)
+    return d
+
+
+def filter_new_since_snapshot(source_key: str, tenders: list, batch_end: str) -> list:
+    """Return only tenders that were NOT in the previous snapshot for this source.
+
+    Used for sites that publish no dates at all (NMB, Buffalo City, GDoH). We
+    snapshot the set of tender-identity hashes each run; anything already seen
+    is treated as an old listing and dropped. New tenders get PUBLICATION_DATE
+    set to the batch-end date so downstream filters keep them.
+
+    On the very first run for a source, the snapshot is empty — every currently-
+    listed tender is treated as new. Subsequent runs then only surface deltas.
+    """
+    import json, hashlib
+    snap_path = os.path.join(_snapshot_dir(), f"{source_key.replace('.', '_')}.json")
+
+    is_first_run = not os.path.exists(snap_path)
+    prev_seen: set = set()
+    if not is_first_run:
+        try:
+            with open(snap_path, "r", encoding="utf-8") as f:
+                prev_seen = set(json.load(f))
+        except Exception as e:
+            logging.warning(f"snapshot load failed for {source_key}: {e}")
+            is_first_run = True
+
+    def _identity(t: dict) -> str:
+        tid = str(t.get("TENDER_ID") or "").strip().upper()
+        desc = str(t.get("TENDER_DESCRIPTION") or "").strip().lower()[:120]
+        key = tid or desc
+        return hashlib.sha1(key.encode("utf-8")).hexdigest()
+
+    current_ids: set = set()
+    new: list = []
+    for t in tenders:
+        idnt = _identity(t)
+        current_ids.add(idnt)
+        if idnt in prev_seen:
+            continue
+        if not t.get("PUBLICATION_DATE"):
+            t["PUBLICATION_DATE"] = batch_end.replace("-", "/")
+        new.append(t)
+
+    try:
+        with open(snap_path, "w", encoding="utf-8") as f:
+            json.dump(sorted(current_ids), f)
+    except Exception as e:
+        logging.warning(f"snapshot save failed for {source_key}: {e}")
+
+    # First run for a source: we have no prior baseline, so treat every listing
+    # as pre-existing (return empty) rather than spike the report with the entire
+    # site catalog. Next run onward will show real deltas.
+    if is_first_run:
+        logging.info(
+            f"snapshot: {source_key} — first run; seeded baseline with "
+            f"{len(current_ids)} listings, returning 0 new for this batch."
+        )
+        return []
+
+    dropped = len(tenders) - len(new)
+    logging.info(
+        f"snapshot: {source_key} — {len(new)} new / {len(tenders)} listed "
+        f"({dropped} previously seen). {len(prev_seen)} in prior snapshot."
+    )
+    return new
+
+
+def wp_pub_date_from_url(url: str, date_from, date_to) -> str:
+    """Module-level entry point (shared with SeleniumWatchlistScrapers).
+
+    Recovers a publication date from URL path patterns typical of WordPress:
+      - /wp-content/uploads/YYYY/MM/filename.pdf   (HEAD for exact Last-Modified)
+      - /YYYY/MM/DD/post-slug/                     (day permalink)
+      - /YYYY/MM/post-slug/                        (month permalink; day=01)
+
+    date_from and date_to may be str ('YYYY-MM-DD') or datetime.date.
+    Returns 'YYYY/MM/DD' or ''.
+    """
+    if not url:
+        return ""
+    if isinstance(date_from, str):
+        date_from = datetime.strptime(date_from, "%Y-%m-%d").date()
+    if isinstance(date_to, str):
+        date_to = datetime.strptime(date_to, "%Y-%m-%d").date()
+
+    batch_months = set()
+    d = date_from
+    while d <= date_to:
+        batch_months.add((d.year, d.month))
+        d += timedelta(days=1)
+
+    m = re.search(r"/uploads/(\d{4})/(\d{2})/", url)
+    if m:
+        y, mo = int(m.group(1)), int(m.group(2))
+        if (y, mo) not in batch_months:
+            return f"{y}/{mo:02d}/01"
+        try:
+            h = requests.head(url, headers=_HEADERS, timeout=15, allow_redirects=True)
+            lm = h.headers.get("Last-Modified")
+            if lm:
+                from email.utils import parsedate_to_datetime
+                dt = parsedate_to_datetime(lm)
+                return dt.strftime("%Y/%m/%d")
+        except Exception as e:
+            logging.debug(f"HEAD failed for {url}: {e}")
+        return f"{y}/{mo:02d}/15"
+
+    m = re.search(r"/(\d{4})/(\d{2})/(\d{2})(?:/|$|[?#])", url)
+    if m:
+        y, mo, d = int(m.group(1)), int(m.group(2)), int(m.group(3))
+        if 2000 <= y <= 2100 and 1 <= mo <= 12 and 1 <= d <= 31:
+            try:
+                return date(y, mo, d).strftime("%Y/%m/%d")
+            except ValueError:
+                pass
+
+    m = re.search(r"/(\d{4})/(\d{2})/(?![0-9])", url)
+    if m:
+        y, mo = int(m.group(1)), int(m.group(2))
+        if 2000 <= y <= 2100 and 1 <= mo <= 12:
+            return f"{y}/{mo:02d}/01"
+
+    return ""
+
+
 def _get(url: str, verify=True, timeout=30) -> Optional[BeautifulSoup]:
     try:
         resp = requests.get(url, headers=_HEADERS, timeout=timeout, verify=verify)
@@ -122,7 +252,7 @@ class _Base:
         if not root.handlers:
             os.makedirs("logs", exist_ok=True)
             root.setLevel(logging.INFO)
-            root.addHandler(logging.FileHandler("logs/scraper.log"))
+            root.addHandler(logging.FileHandler("logs/scraper.log", encoding='utf-8'))
         if log_queue is not None:
             class _QH(logging.Handler):
                 def __init__(self, q): super().__init__(); self.q = q
@@ -149,6 +279,22 @@ class _Base:
         if pub_date is None:
             return False
         return self.date_from <= pub_date <= self.date_to
+
+    def _batch_months(self):
+        """Set of (year, month) tuples covered by the batch window. Cached."""
+        cached = getattr(self, "_batch_months_cache", None)
+        if cached is not None:
+            return cached
+        result = set()
+        d = self.date_from
+        while d <= self.date_to:
+            result.add((d.year, d.month))
+            d += timedelta(days=1)
+        self._batch_months_cache = result
+        return result
+
+    def _wp_pub_date_from_url(self, url: str) -> str:
+        return wp_pub_date_from_url(url, self.date_from, self.date_to)
 
     def run(self) -> List[dict]:
         raise NotImplementedError
@@ -197,7 +343,7 @@ class NtabankuluScraper(_Base):
             if a:
                 t["LINK"] = a["href"]
 
-            # Publication date
+            # Publication date — try <time> tag first, fall back to WP upload URL
             time_el = art.find("time")
             if time_el:
                 pub = _parse_date(time_el.get("datetime", "") or time_el.get_text(strip=True))
@@ -205,8 +351,16 @@ class NtabankuluScraper(_Base):
                     if not self._in_range(pub):
                         continue
                     t["PUBLICATION_DATE"] = pub.strftime("%Y/%m/%d")
-            if not t["PUBLICATION_DATE"]:
-                t["PUBLICATION_DATE"] = ""
+            if not t["PUBLICATION_DATE"] and t["LINK"]:
+                url_pub = self._wp_pub_date_from_url(t["LINK"])
+                if url_pub:
+                    try:
+                        pub_date = datetime.strptime(url_pub, "%Y/%m/%d").date()
+                        if not self._in_range(pub_date):
+                            continue
+                        t["PUBLICATION_DATE"] = url_pub
+                    except ValueError:
+                        pass
 
             t["TENDER_TYPE"] = _infer_type(t["TENDER_DESCRIPTION"])
             self.tenderData.append(t)
@@ -228,6 +382,8 @@ class UmzimvubuScraper(_Base):
             return self.tenderData
 
         table = soup.find("table")
+        rows_in = 0
+        rows_dropped_out_of_window = 0
         if table:
             for tr in table.find_all("tr"):
                 tds = tr.find_all("td")
@@ -240,7 +396,19 @@ class UmzimvubuScraper(_Base):
                 a = tr.find("a", href=True)
                 if a:
                     t["LINK"] = a["href"]
-                t["PUBLICATION_DATE"] = ""
+                rows_in += 1
+                # Recover publication date from the /uploads/YYYY/MM/ URL path,
+                # HEAD-fetching Last-Modified when the URL is inside the batch window.
+                t["PUBLICATION_DATE"] = self._wp_pub_date_from_url(t["LINK"])
+                pub_date = None
+                if t["PUBLICATION_DATE"]:
+                    try:
+                        pub_date = datetime.strptime(t["PUBLICATION_DATE"], "%Y/%m/%d").date()
+                    except ValueError:
+                        pub_date = None
+                if pub_date and not self._in_range(pub_date):
+                    rows_dropped_out_of_window += 1
+                    continue
                 t["TENDER_TYPE"] = _infer_type(t["TENDER_DESCRIPTION"])
                 self.tenderData.append(t)
         else:
@@ -252,10 +420,23 @@ class UmzimvubuScraper(_Base):
                     continue
                 if item.get("href"):
                     t["LINK"] = item["href"]
-                t["PUBLICATION_DATE"] = ""
+                rows_in += 1
+                t["PUBLICATION_DATE"] = self._wp_pub_date_from_url(t["LINK"])
+                pub_date = None
+                if t["PUBLICATION_DATE"]:
+                    try:
+                        pub_date = datetime.strptime(t["PUBLICATION_DATE"], "%Y/%m/%d").date()
+                    except ValueError:
+                        pub_date = None
+                if pub_date and not self._in_range(pub_date):
+                    rows_dropped_out_of_window += 1
+                    continue
                 self.tenderData.append(t)
 
-        logging.info(f"Umzimvubu: {len(self.tenderData)} tender(s)")
+        logging.info(
+            f"Umzimvubu: {len(self.tenderData)} tender(s) in batch window "
+            f"({rows_dropped_out_of_window} of {rows_in} dropped as out-of-window based on WP upload date)"
+        )
         return self.tenderData
 
 
@@ -317,9 +498,9 @@ class WinnieMMLScraper(_Base):
             if advert_idx is not None and advert_idx < len(tds):
                 pub = _parse_date(tds[advert_idx].get_text(strip=True))
                 if pub:
+                    if not self._in_range(pub):
+                        continue
                     t["PUBLICATION_DATE"] = pub.strftime("%Y/%m/%d")
-            if not t["PUBLICATION_DATE"]:
-                t["PUBLICATION_DATE"] = ""
 
             if closing_idx is not None and closing_idx < len(tds):
                 t["CLOSING_DATE"], t["CLOSING_TIME"] = _parse_closing(
@@ -329,6 +510,18 @@ class WinnieMMLScraper(_Base):
             a = link_td.find("a", href=True)
             if a:
                 t["LINK"] = a["href"]
+
+            # Fallback publication date via /wp-content/uploads/YYYY/MM/ URL
+            if not t["PUBLICATION_DATE"] and t["LINK"]:
+                url_pub = self._wp_pub_date_from_url(t["LINK"])
+                if url_pub:
+                    try:
+                        pub_date = datetime.strptime(url_pub, "%Y/%m/%d").date()
+                        if not self._in_range(pub_date):
+                            continue
+                        t["PUBLICATION_DATE"] = url_pub
+                    except ValueError:
+                        pass
 
             t["TENDER_TYPE"] = _infer_type(t["TENDER_DESCRIPTION"])
             self.tenderData.append(t)
@@ -465,13 +658,17 @@ class GreatKeiScraper(_Base):
                     continue
                 a = heading.find("a", href=True) or art.find("a", href=True)
                 t["TENDER_DESCRIPTION"] = heading.get_text(strip=True)
-                if a:
-                    t["LINK"] = a["href"]
+                link = a["href"] if a else ""
+                if link:
+                    t["LINK"] = link
 
                 text = art.get_text(" ", strip=True)
 
-                # Reference number e.g. "RFQ/BTO/09/2025/26"
-                ref_m = re.search(r"(RFQ|BID|SCM|RFP|T|B)[/\-]\w+[/\-]\w+", text, re.I)
+                # Full reference number e.g. "RFQ/BTO/09/2025/26", "TECH/ELEC/08/2025/26"
+                ref_m = re.search(
+                    r"(RFQ|BID|SCM|RFP|TECH|CORP|STRA|COMM|T|B)[/\-]\w+(?:[/\-]\w+){2,}",
+                    text, re.I
+                )
                 if ref_m:
                     t["TENDER_ID"] = ref_m.group(0)
 
@@ -481,29 +678,32 @@ class GreatKeiScraper(_Base):
                     continue
                 seen_ids.add(dedup_key)
 
-                # Publication date
-                time_el = art.find("time")
-                if time_el:
-                    pub = _parse_date(time_el.get("datetime", "") or time_el.get_text())
-                    if pub:
+                # Publication date — extract from URL path /web/YYYY/MM/DD/
+                pub_m = re.search(r"/web/(\d{4})/(\d{2})/(\d{2})/", link)
+                if pub_m:
+                    try:
+                        pub = date(int(pub_m.group(1)), int(pub_m.group(2)), int(pub_m.group(3)))
                         if self._in_range(pub):
                             found_in_range = True
                         t["PUBLICATION_DATE"] = pub.strftime("%Y/%m/%d")
-                if not t["PUBLICATION_DATE"]:
-                    t["PUBLICATION_DATE"] = ""
+                    except ValueError:
+                        pass
 
-                # Closing date — "12 June 2026 - 11:00 am" pattern
-                close_m = re.search(
-                    r"[Cc]los(?:ing|ed?)\s*(?:date)?:?\s*"
-                    r"(\d{1,2}\s+[A-Za-z]+\s+\d{4}|\d{1,2}/\d{1,2}/\d{4})"
-                    r"(?:\s*[-–]\s*(\d{1,2}[h:]\d{2}(?:\s*[AaPp][Mm])?))?",
-                    text,
-                )
-                if close_m:
-                    cd = _parse_date(close_m.group(1))
-                    if cd:
-                        t["CLOSING_DATE"] = cd.strftime("%Y/%m/%d")
-                    t["CLOSING_TIME"] = close_m.group(2) or ""
+                # Closing date/time — visit individual page
+                if link:
+                    detail = _get(link)
+                    if detail:
+                        detail_text = detail.get_text(" ", strip=True)
+                        close_m = re.search(
+                            r"(\d{1,2}\s+[A-Za-z]+\s+\d{4}|\d{1,2}/\d{1,2}/\d{4})"
+                            r"\s*[-–]\s*(\d{1,2}[:.]\d{2}\s*(?:[AaPp][Mm])?)",
+                            detail_text,
+                        )
+                        if close_m:
+                            cd = _parse_date(close_m.group(1))
+                            if cd:
+                                t["CLOSING_DATE"] = cd.strftime("%Y/%m/%d")
+                            t["CLOSING_TIME"] = close_m.group(2).strip()
 
                 t["TENDER_TYPE"] = _infer_type(t["TENDER_DESCRIPTION"])
                 self.tenderData.append(t)
@@ -736,7 +936,12 @@ class NMBMMScraper(_Base):
             else:
                 break
 
-        logging.info(f"NMB MM: {len(self.tenderData)} tender(s)")
+        # NMB publishes no dates anywhere on the site — snapshot-diff surfaces only
+        # tenders that weren't listed on the previous scraper run for this source.
+        self.tenderData = filter_new_since_snapshot(
+            self.SOURCE_KEY, self.tenderData, self.date_to.strftime("%Y-%m-%d")
+        )
+        logging.info(f"NMB MM: {len(self.tenderData)} new tender(s) since last snapshot")
         return self.tenderData
 
 
@@ -1154,7 +1359,11 @@ class GDoHScraper(_Base):
             t["TENDER_TYPE"]      = _infer_type(t["TENDER_DESCRIPTION"])
             self.tenderData.append(t)
 
-        logging.info(f"GDoH: {len(self.tenderData)} tender(s)")
+        # GDoH has no publication date on the listing — snapshot-diff surfaces new
+        self.tenderData = filter_new_since_snapshot(
+            self.SOURCE_KEY, self.tenderData, self.date_to.strftime("%Y-%m-%d")
+        )
+        logging.info(f"GDoH: {len(self.tenderData)} new tender(s) since last snapshot")
         return self.tenderData
 
 
@@ -1209,7 +1418,85 @@ class BuffaloCityMMScraper(_Base):
                 t["TENDER_TYPE"]      = tender_type
                 self.tenderData.append(t)
 
-        logging.info(f"Buffalo City MM: {len(self.tenderData)} tender(s)")
+        # Buffalo City lists no publication dates — use snapshot-diff for new-since-last
+        self.tenderData = filter_new_since_snapshot(
+            self.SOURCE_KEY, self.tenderData, self.date_to.strftime("%Y-%m-%d")
+        )
+        logging.info(f"Buffalo City MM: {len(self.tenderData)} new tender(s) since last snapshot")
+        return self.tenderData
+
+
+class FSCAScraper(_Base):
+    """https://www.fsca.co.za/Seeker-of-Business-Opportunity — server-rendered table.
+    Columns: (blank) | Title | Tender Code | Status | Advertised | Closing Date
+    Advertised/Closing dates are 'DD Month YYYY'. Only Status="Open" tenders are kept.
+
+    Important: FSCA publishes two series — T-series (bids) which also appear on
+    eTenders.gov.za, and R-series (RFQs) which appear ONLY on the FSCA site.
+    Direct scraping of FSCA is the only way we see the R-series.
+    """
+    DEPARTMENT = "Financial Sector Conduct Authority"
+    PROVINCE   = "National"
+    SOURCE_KEY = "FSCA.CO.ZA"
+    _URL       = "https://www.fsca.co.za/Seeker-of-Business-Opportunity"
+
+    def run(self):
+        logging.info("FSCA: fetching Seeker-of-Business-Opportunity page")
+        soup = _get(self._URL)
+        if not soup:
+            return self.tenderData
+
+        table = soup.find("table")
+        if not table:
+            logging.warning("FSCA: no table found")
+            return self.tenderData
+
+        rows = table.find_all("tr")
+        # Header row: (blank) | Title | Tender Code | Status | Advertised | Closing Date
+        for tr in rows[1:]:
+            tds = tr.find_all(["td", "th"])
+            if len(tds) < 6:
+                continue
+
+            title       = tds[1].get_text(" ", strip=True)
+            tender_code = tds[2].get_text(strip=True)
+            status      = tds[3].get_text(strip=True)
+            advertised  = tds[4].get_text(strip=True)
+            closing     = tds[5].get_text(strip=True)
+
+            if not title:
+                continue
+            if status.lower() != "open":
+                continue
+
+            pub = _parse_date(advertised)
+            # Strict: drop rows where the advert date is unparseable or out of window.
+            # FSCA's page keeps a long archive of older tenders — accepting blanks
+            # would recreate the phantom-count problem we fixed for the municipalities.
+            if not pub or not self._in_range(pub):
+                continue
+
+            t = self._blank()
+            t["TENDER_ID"]          = tender_code
+            t["TENDER_DESCRIPTION"] = title
+            t["PUBLICATION_DATE"]   = pub.strftime("%Y/%m/%d")
+
+            cd = _parse_date(closing)
+            if cd:
+                t["CLOSING_DATE"] = cd.strftime("%Y/%m/%d")
+
+            # First link in the row (title or attachment)
+            a = tr.find("a", href=True)
+            if a:
+                href = a["href"]
+                if href.startswith("/"):
+                    href = "https://www.fsca.co.za" + href
+                t["LINK"] = href
+
+            t["TENDER_TYPE"] = _infer_type(title)
+            self.tenderData.append(t)
+
+        logging.info(f"FSCA: {len(self.tenderData)} tender(s) in batch window")
         return self.tenderData
 
 
@@ -1321,6 +1608,7 @@ SCRAPER_REGISTRY: dict = {
     "SITA":                  SITAScraper,
     "GDoH":                  GDoHScraper,
     "Buffalo City MM":       BuffaloCityMMScraper,
+    "FSCA":                  FSCAScraper,
 }
 
 _BLOCKED = {

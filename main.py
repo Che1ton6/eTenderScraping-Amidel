@@ -1,5 +1,11 @@
 #!/usr/bin/env python3
 import os
+import sys
+try:
+    sys.stdout.reconfigure(encoding='utf-8', errors='replace')
+    sys.stderr.reconfigure(encoding='utf-8', errors='replace')
+except (AttributeError, ValueError):
+    pass
 import tkinter as tk
 from tkinter import ttk, scrolledtext
 import threading
@@ -15,9 +21,10 @@ from TenderScraper import TenderScraper
 from BatchProcessor import (create_batch_folder, save_daily_file,
                             create_end_product, update_equation_file,
                             calculate_counts, update_power_bi_export,
-                            deduplicate_tenders)
+                            update_master_tenders, deduplicate_tenders)
 from TenderSummary import create_tender_summary
 from TenderAnalysisGenerator import create_tender_analysis
+from CybersecurityTenders import create_cybersecurity_tenders
 
 # ── Amidel brand colours ──────────────────────────────────────────────────────
 NAVY        = "#1C3880"
@@ -173,7 +180,7 @@ class App(tk.Tk):
 
     def _on_source_change(self):
         src = self.source_var.get()
-        if src in ("etenders", "watchlist"):
+        if src in ("etenders", "full_batch", "all_but_etenders"):
             self._lbl_batch_type.grid()
             self._radio_frame.grid()
             self._lbl_week.grid()
@@ -228,7 +235,9 @@ class App(tk.Tk):
                        **src_opts).pack(side="left")
         tk.Radiobutton(src_frame, text="EC DPW", value="ecdpw",
                        **src_opts).pack(side="left", padx=(14, 0))
-        tk.Radiobutton(src_frame, text="(All) Watchlist Websites", value="watchlist",
+        tk.Radiobutton(src_frame, text="Full Batch", value="full_batch",
+                       **src_opts).pack(side="left", padx=(14, 0))
+        tk.Radiobutton(src_frame, text="All but eTenders", value="all_but_etenders",
                        **src_opts).pack(side="left", padx=(14, 0))
 
         # Batch type (eTenders only)
@@ -428,10 +437,22 @@ class App(tk.Tk):
             self.status_var.set("Scraping EC DPW tenders…")
             threading.Thread(target=self._run_ecdpw, args=(pub_date_from, filter_label),
                              daemon=True).start()
-        elif self.source_var.get() == "watchlist":
+        elif self.source_var.get() == "full_batch":
             date_from, date_to = self._anchor_range()
-            self.status_var.set(f"Scraping Watchlist {date_from} → {date_to}…")
-            threading.Thread(target=self._run_watchlist, args=(date_from, date_to),
+            self.status_var.set(f"Scraping Full Batch {date_from} → {date_to}…")
+            threading.Thread(target=self._run_watchlist,
+                             args=(date_from, date_to),
+                             kwargs={"skip_etenders": False,
+                                     "folder_name": "full_batch",
+                                     "filter_to_watchlist": True,
+                                     "dedupe_cross_source": True},
+                             daemon=True).start()
+        elif self.source_var.get() == "all_but_etenders":
+            date_from, date_to = self._anchor_range()
+            self.status_var.set(f"Scraping All but eTenders {date_from} → {date_to}…")
+            threading.Thread(target=self._run_watchlist,
+                             args=(date_from, date_to),
+                             kwargs={"skip_etenders": True, "folder_name": "all_but_etenders"},
                              daemon=True).start()
         else:
             date_from, date_to = self._anchor_range()
@@ -449,6 +470,22 @@ class App(tk.Tk):
             return cd_date >= datetime.strptime(date_from, "%Y-%m-%d").date()
         except ValueError:
             return True
+
+    @staticmethod
+    def _publication_in_range(tender: dict, date_from: str, date_to: str) -> bool:
+        """Return False if the tender's publication date falls outside the batch window.
+        Blanks and unparseable dates are kept — many watchlist sources omit or malform
+        this field, and dropping them silently would cause missed tenders."""
+        pd = str(tender.get("PUBLICATION_DATE") or "").strip()
+        if not pd:
+            return True
+        try:
+            pd_date = datetime.strptime(pd, "%Y/%m/%d").date()
+        except ValueError:
+            return True
+        df = datetime.strptime(date_from, "%Y-%m-%d").date()
+        dt = datetime.strptime(date_to,   "%Y-%m-%d").date()
+        return df <= pd_date <= dt
 
     def _run(self, date_from, date_to):
         end_product_path = None
@@ -485,12 +522,21 @@ class App(tk.Tk):
                 if scraper.tenderData:
                     all_tenders.extend(scraper.tenderData)
 
-            raw_tenders  = list(all_tenders)
-            pre_dedup    = len([t for t in all_tenders if self._closing_not_expired(t, date_from)])
-            all_tenders  = [t for t in all_tenders if self._closing_not_expired(t, date_from)]
-            expired_removed = len(raw_tenders) - pre_dedup
-            all_tenders  = deduplicate_tenders(all_tenders)
-            dupes_removed = pre_dedup - len(all_tenders)
+            raw_tenders     = list(all_tenders)
+            after_expired   = [t for t in all_tenders if self._closing_not_expired(t, date_from)]
+            expired_removed = len(raw_tenders) - len(after_expired)
+            after_pub       = [t for t in after_expired if self._publication_in_range(t, date_from, date_to)]
+            pub_removed     = len(after_expired) - len(after_pub)
+            if pub_removed:
+                logging.info(f"Removed {pub_removed} tender(s) with publication date outside {date_from}..{date_to}")
+            all_tenders     = deduplicate_tenders(after_pub)
+            dupes_removed   = len(after_pub) - len(all_tenders)
+
+            # DUPLICATED column defaults to 0 for eTenders mode (single source).
+            for t in all_tenders:
+                t.setdefault("DUPLICATED", 0)
+            for t in raw_tenders:
+                t.setdefault("DUPLICATED", 0)
 
             if all_tenders:
                 df = pd.DataFrame(all_tenders)
@@ -503,6 +549,7 @@ class App(tk.Tk):
                     counts = calculate_counts(df)
                     update_equation_file(counts, batch_type, report_date, batch_folder)
                     update_power_bi_export(batch_folder, date_from, date_to, batch_type)
+                    update_master_tenders(batch_folder)
                     equation_updated = True
                 except Exception as e:
                     logging.error(f"Batch processing error: {e}")
@@ -517,13 +564,18 @@ class App(tk.Tk):
                 except Exception as e:
                     logging.error(f"Tender Analysis creation error: {e}")
 
+                try:
+                    create_cybersecurity_tenders(df, batch_folder)
+                except Exception as e:
+                    logging.error(f"Cybersecurity Tenders creation error: {e}")
+
         except Exception as e:
             self.after(0, self._on_error, str(e))
             return
 
         self.after(0, self._show_done, len(all_tenders), date_from, date_to,
                    end_product_path, equation_updated, summaries_count,
-                   len(raw_tenders), expired_removed, dupes_removed)
+                   len(raw_tenders), expired_removed, dupes_removed, pub_removed)
 
     # ── Watchlist helpers ─────────────────────────────────────────────────────
 
@@ -548,14 +600,18 @@ class App(tk.Tk):
             logging.warning(f"Could not load Websites.xlsx: {e}")
             return set()
 
-    def _run_watchlist(self, date_from: str, date_to: str):
+    def _run_watchlist(self, date_from: str, date_to: str,
+                       skip_etenders: bool = False,
+                       folder_name: str = "All_Tenders",
+                       filter_to_watchlist: bool = False,
+                       dedupe_cross_source: bool = False):
         all_tenders      = []
         end_product_path = None
         equation_updated = False
         summaries_count  = 0
         batch_type       = self.batch_type_var.get()
         report_date      = datetime.strptime(date_to, "%Y-%m-%d")
-        root_dir         = os.path.join("data", "All_Tenders")
+        root_dir         = os.path.join("data", folder_name)
 
         start = datetime.strptime(date_from, "%Y-%m-%d")
         end   = datetime.strptime(date_to,   "%Y-%m-%d")
@@ -571,19 +627,30 @@ class App(tk.Tk):
                                                root_dir=root_dir)
 
             # ── eTenders (day-by-day) ─────────────────────────────────────────
-            for i, day in enumerate(days, 1):
-                self.after(0, lambda msg=f"eTenders: day {i}/{len(days)}: {day}…":
-                           self.status_var.set(msg))
-                cm = ConfigManager()
-                cm.updateConfig({"scraping": {"dateFrom": day, "dateTo": day}})
-                scraper = TenderScraper(log_queue=self.log_queue)
-                scraper.run(export=False)
-                try:
-                    save_daily_file(scraper.tenderData or [], day, batch_folder)
-                except Exception as e:
-                    logging.error(f"Could not save daily file for {day}: {e}")
-                if scraper.tenderData:
-                    all_tenders.extend(scraper.tenderData)
+            # Saved to daily batch files and Power BI only — NOT included in
+            # the Checker/end-product, which shows watchlist tenders exclusively.
+            # Skipped entirely when running the "All but eTenders" mode.
+            if not skip_etenders:
+                for i, day in enumerate(days, 1):
+                    self.after(0, lambda msg=f"eTenders: day {i}/{len(days)}: {day}…":
+                               self.status_var.set(msg))
+                    cm = ConfigManager()
+                    cm.updateConfig({"scraping": {"dateFrom": day, "dateTo": day}})
+                    scraper = TenderScraper(log_queue=self.log_queue)
+                    scraper.run(export=False)
+                    try:
+                        save_daily_file(scraper.tenderData or [], day, batch_folder)
+                    except Exception as e:
+                        logging.error(f"Could not save daily file for {day}: {e}")
+                    # In Full Batch mode, include eTenders portal tenders in the
+                    # combined all_tenders list so cross-source dedupe against the
+                    # watchlist scrapes can happen. Tag them so we know their origin.
+                    if dedupe_cross_source and scraper.tenderData:
+                        for t in scraper.tenderData:
+                            t["_from_etenders"] = True
+                        all_tenders.extend(scraper.tenderData)
+            else:
+                logging.info("All but eTenders mode: skipping eTenders.gov.za portal scrape")
 
             # ── EC DPW ────────────────────────────────────────────────────────
             self.after(0, lambda: self.status_var.set("Scraping EC DPW tenders…"))
@@ -641,11 +708,44 @@ class App(tk.Tk):
                 logging.error(f"Selenium watchlist scrapers error: {e}")
 
             raw_tenders     = list(all_tenders)
-            pre_dedup       = len([t for t in all_tenders if self._closing_not_expired(t, date_from)])
-            all_tenders     = [t for t in all_tenders if self._closing_not_expired(t, date_from)]
-            expired_removed = len(raw_tenders) - pre_dedup
-            all_tenders     = deduplicate_tenders(all_tenders)
-            dupes_removed   = pre_dedup - len(all_tenders)
+            after_expired   = [t for t in all_tenders if self._closing_not_expired(t, date_from)]
+            expired_removed = len(raw_tenders) - len(after_expired)
+            after_pub       = [t for t in after_expired if self._publication_in_range(t, date_from, date_to)]
+            pub_removed     = len(after_expired) - len(after_pub)
+            if pub_removed:
+                logging.info(f"Removed {pub_removed} tender(s) with publication date outside {date_from}..{date_to}")
+            all_tenders     = deduplicate_tenders(after_pub)
+            dupes_removed   = len(after_pub) - len(all_tenders)
+
+            # Full Batch mode: cross-source dedupe only. We deliberately do NOT
+            # filter to the watchlist here — all scraped tenders are kept in the
+            # end product; the Display Equation's TOTAL WATCHLIST row shows the
+            # watchlist-matched subset alongside the full total.
+            if dedupe_cross_source:
+                from BatchProcessor import merge_and_flag_duplicates
+                before = len(all_tenders)
+                all_tenders = merge_and_flag_duplicates(all_tenders, prefer_etenders=True)
+                num_dupes = sum(1 for t in all_tenders if t.get("DUPLICATED") == 1)
+                logging.info(f"Cross-source dedupe: {before} -> {len(all_tenders)} unique, "
+                             f"{num_dupes} flagged as duplicated across sources")
+            else:
+                # Every downstream sheet expects the column to exist. Default to 0.
+                for t in all_tenders:
+                    t.setdefault("DUPLICATED", 0)
+                for t in raw_tenders:
+                    t.setdefault("DUPLICATED", 0)
+
+            # When skipping eTenders, write per-day batch files from the watchlist
+            # tenders themselves — split by PUBLICATION_DATE — so batches/ isn't empty.
+            if skip_etenders:
+                for day in days:
+                    day_slash = day.replace("-", "/")
+                    day_tenders = [t for t in all_tenders
+                                   if str(t.get("PUBLICATION_DATE") or "").strip() == day_slash]
+                    try:
+                        save_daily_file(day_tenders, day, batch_folder)
+                    except Exception as e:
+                        logging.error(f"Could not save daily file for {day}: {e}")
 
             if all_tenders:
                 df = pd.DataFrame(all_tenders)
@@ -653,11 +753,14 @@ class App(tk.Tk):
                 try:
                     end_product_path = create_end_product(
                         df, date_from, date_to, batch_type, report_date, batch_folder,
-                        raw_df=pd.DataFrame(raw_tenders)
+                        raw_df=pd.DataFrame(raw_tenders),
+                        no_etenders=skip_etenders,
                     )
                     counts = calculate_counts(df)
-                    update_equation_file(counts, batch_type, report_date, batch_folder)
+                    update_equation_file(counts, batch_type, report_date, batch_folder,
+                                         no_etenders=skip_etenders)
                     update_power_bi_export(batch_folder, date_from, date_to, batch_type)
+                    update_master_tenders(batch_folder)
                     equation_updated = True
                 except Exception as e:
                     logging.error(f"Watchlist batch processing error: {e}")
@@ -672,13 +775,18 @@ class App(tk.Tk):
                 except Exception as e:
                     logging.error(f"Watchlist Tender Analysis creation error: {e}")
 
+                try:
+                    create_cybersecurity_tenders(df, batch_folder)
+                except Exception as e:
+                    logging.error(f"Watchlist Cybersecurity Tenders creation error: {e}")
+
         except Exception as e:
             self.after(0, self._on_error, str(e))
             return
 
         self.after(0, self._show_done, len(all_tenders), date_from, date_to,
                    end_product_path, equation_updated, summaries_count,
-                   len(raw_tenders), expired_removed, dupes_removed)
+                   len(raw_tenders), expired_removed, dupes_removed, pub_removed)
 
     def _scrape_jpc(self, date_from: str, date_to: str) -> list:
         from JPCScraper import JPCScraper
@@ -704,13 +812,16 @@ class App(tk.Tk):
             self.after(0, self._on_error, str(e))
 
     def _show_done(self, count, date_from, date_to, end_product_path, equation_updated,
-                   summaries_count=0, raw_count=None, expired_removed=0, dupes_removed=0):
+                   summaries_count=0, raw_count=None, expired_removed=0, dupes_removed=0,
+                   pub_removed=0):
         self.done_count_var.set(
             f"{count} tender{'s' if count != 1 else ''} scraped"
         )
         parts = []
         if expired_removed:
             parts.append(f"{expired_removed} expired removed")
+        if pub_removed:
+            parts.append(f"{pub_removed} out-of-range removed")
         if dupes_removed:
             parts.append(f"{dupes_removed} duplicate{'s' if dupes_removed != 1 else ''} removed")
         if parts and raw_count:
