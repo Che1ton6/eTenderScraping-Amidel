@@ -1,7 +1,7 @@
 {
     "scraping": {
-        "dateFrom": "2026-07-23",
-        "dateTo": "2026-07-23",
+        "dateFrom": "2026-08-02",
+        "dateTo": "2026-08-02",
         "url": "https://www.etenders.gov.za/Home/opportunities"
     },
     "browser": {

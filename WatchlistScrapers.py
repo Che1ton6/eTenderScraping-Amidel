@@ -77,8 +77,19 @@ def _parse_closing(raw: str):
         raw, re.IGNORECASE,
     )
     time_str = tm.group(1).strip() if tm else ""
+    # 00:00 is never a valid government tender closing time — treat as missing
+    if time_str in ("00:00", "00:00:00"):
+        time_str = ""
     d = _parse_date(raw)
     return (d.strftime("%Y/%m/%d"), time_str) if d else ("", time_str)
+
+
+def _is_pdf_url(url: str) -> bool:
+    """Return True if the URL points directly to a PDF or other document file."""
+    if not url:
+        return False
+    path = url.split("?")[0].split("#")[0].lower()
+    return path.endswith((".pdf", ".docx", ".doc", ".xlsx", ".xls", ".zip"))
 
 
 def _infer_type(description: str) -> str:
@@ -612,10 +623,8 @@ class MnqumaScraper(_Base):
                     if cd:
                         t["CLOSING_DATE"] = cd.strftime("%Y/%m/%d")
 
-                # First document download link (PDF/DOC preferred over landing page)
-                doc_a = post.find("a", href=re.compile(r"\.(pdf|docx?|xlsx?)$", re.I))
-                if doc_a:
-                    t["LINK"] = doc_a["href"]
+                # Keep the post page URL as LINK (not the PDF download).
+                # Scraper processes website links; PDFs are discovered from the page.
 
                 t["TENDER_TYPE"] = _infer_type(desc)
                 self.tenderData.append(t)
@@ -796,12 +805,19 @@ class GPLScraper(_Base):
             heading = art.find(["h2", "h3", "h4"])
             if not heading:
                 continue
-            a = heading.find("a", href=True) or art.find("a", href=True)
+            # Prefer the post permalink (web page) over any PDF links inside the article
+            page_a = heading.find("a", href=True)
+            if not page_a:
+                page_a = art.find("a", href=lambda h: h and not _is_pdf_url(h))
+            if not page_a:
+                page_a = art.find("a", href=True)
             t["TENDER_DESCRIPTION"] = heading.get_text(strip=True)
             if not t["TENDER_DESCRIPTION"]:
                 continue
-            if a:
-                t["LINK"] = a["href"]
+            if page_a:
+                href = page_a["href"]
+                # If only a PDF link exists, use it — better than nothing
+                t["LINK"] = href
 
             # Tender number — e.g. "GPL019/2022"
             ref_m = re.search(r"GPL\d+/\d+", t["TENDER_DESCRIPTION"], re.I)
@@ -876,6 +892,18 @@ class NMBMMScraper(_Base):
                 if len(rows) < 3:
                     continue
 
+                # Row[0] is a section heading — use it to derive the correct tender type
+                # e.g. "FORMAL TENDERS" → Request for Bid, "REQUESTS FOR QUOTATION" → RFQ
+                section_heading = rows[0].get_text(strip=True).upper() if rows else ""
+                if any(k in section_heading for k in ("QUOTATION", "RFQ")):
+                    section_type = "Request for Quotation"
+                elif any(k in section_heading for k in ("PROPOSAL", "RFP")):
+                    section_type = "Request for Proposal"
+                elif section_heading:
+                    section_type = "Request for Bid"
+                else:
+                    section_type = None  # fall back to _infer_type per row
+
                 # Find the column header row — the row whose cells contain "description" / "scm"
                 header_idx = None
                 header: list = []
@@ -922,11 +950,15 @@ class NMBMMScraper(_Base):
                     t["PUBLICATION_DATE"]   = ""
                     # No closing date column on NMB website — field will be blank
 
-                    a = tr.find("a", href=True)
-                    if a:
-                        t["LINK"] = a["href"]
+                    # Prefer a web page link; avoid storing direct PDF links
+                    web_a = tr.find("a", href=lambda h: h and not _is_pdf_url(h))
+                    any_a = tr.find("a", href=True)
+                    chosen_a = web_a or any_a
+                    if chosen_a:
+                        t["LINK"] = chosen_a["href"]
 
-                    t["TENDER_TYPE"] = _infer_type(desc)
+                    # Use section heading type if available, else infer from description
+                    t["TENDER_TYPE"] = section_type if section_type else _infer_type(desc)
                     self.tenderData.append(t)
                     found_any = True
 
@@ -1222,11 +1254,15 @@ class WJHBScraper(_Base):
             if briefing_idx is not None:
                 t["BRIEFING_SESSION_VENUE"] = _val(briefing_idx)
 
-            # First PDF link in the download cell (or entire row)
+            # Prefer a web page link over a direct PDF download
+            _listing_url = "https://scm.johannesburgwater.co.za/supply-chain/tenders/all-open-tenders/"
             link_td = tds[dl_idx] if dl_idx is not None and dl_idx < len(tds) else tr
-            a = link_td.find("a", href=True)
-            if a:
-                t["LINK"] = a["href"]
+            web_a = link_td.find("a", href=lambda h: h and not _is_pdf_url(h))
+            pdf_a = link_td.find("a", href=True)
+            chosen = web_a or pdf_a
+            if chosen:
+                href = chosen["href"]
+                t["LINK"] = _listing_url if _is_pdf_url(href) else href
 
             t["TENDER_TYPE"] = _infer_type(t["TENDER_DESCRIPTION"])
             self.tenderData.append(t)
@@ -1407,12 +1443,15 @@ class BuffaloCityMMScraper(_Base):
                     if cd:
                         t["CLOSING_DATE"] = cd.strftime("%Y/%m/%d")
 
-                a = tr.find("a", href=True)
-                if a:
-                    href = a["href"]
+                _listing_url = f"http://www.buffalocity.gov.za/tender_documents.php?year={year}&type={type_param}"
+                web_a = tr.find("a", href=lambda h: h and not _is_pdf_url(h))
+                any_a = tr.find("a", href=True)
+                chosen_a = web_a or any_a
+                if chosen_a:
+                    href = chosen_a["href"]
                     if not href.startswith("http"):
                         href = "http://www.buffalocity.gov.za/" + href.lstrip("/")
-                    t["LINK"] = href
+                    t["LINK"] = _listing_url if _is_pdf_url(href) else href
 
                 t["PUBLICATION_DATE"] = ""
                 t["TENDER_TYPE"]      = tender_type
@@ -1571,11 +1610,13 @@ class SIUScraper(_Base):
                         compulsory = "non-compulsory" not in briefing.lower() and "compulsory" in briefing.lower()
                         t["COMPULSORY_BRIEFING"] = "Yes" if compulsory else "No"
 
-            # First PDF/doc link in VIEW column
+            # VIEW column link — prefer a web page URL over a direct PDF link.
+            # SIU often links straight to PDFs; fall back to the listing page.
             if len(tds) > 4:
                 a = tds[4].find("a", href=True)
                 if a:
-                    t["LINK"] = a["href"]
+                    href = a["href"]
+                    t["LINK"] = self._URL if _is_pdf_url(href) else href
 
             t["TENDER_TYPE"] = _infer_type(desc)
             self.tenderData.append(t)

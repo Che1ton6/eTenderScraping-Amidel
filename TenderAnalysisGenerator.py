@@ -303,7 +303,7 @@ _DEBATABLE_FONT = Font(bold=True, color="9C6500")
 _MAYBE_FILL    = PatternFill("solid", fgColor="FFEB9C")
 _MAYBE_FONT    = Font(bold=True, color="9C6500")
 
-_COL_WIDTHS = [4, 22, 24, 46, 14, 22, 15, 20, 15, 11, 30, 45, 15, 55]
+_COL_WIDTHS = [4, 22, 24, 46, 14, 22, 15, 20, 15, 11, 30, 45, 15, 55, 22, 18]
 _WRAP       = Alignment(wrap_text=True, vertical="top")
 _CENTRE     = Alignment(horizontal="center", vertical="top")
 
@@ -311,6 +311,7 @@ _ANALYSIS_HEADERS = [
     "#", "Tender ID", "Department", "Description", "Province", "Category",
     "Publication Date", "Closing Date", "Briefing Date", "Compulsory",
     "Briefing Venue", "URL", "Should we Submit?", "Explanation",
+    "Tender Type", "Submission Type",
 ]
 
 # Fields aligned to _ANALYSIS_HEADERS; None = handled specially in loop
@@ -329,6 +330,8 @@ _ANALYSIS_FIELDS = [
     "LINK",                 # col 12: URL / tender portal link
     None,                   # col 13: Should we Submit? — left blank for Claude
     None,                   # col 14: Explanation — left blank for Claude
+    "TENDER_TYPE",          # col 15: sourced directly from scraped data
+    "ESUBMISSION",          # col 16: sourced directly from scraped data
 ]
 
 
@@ -382,7 +385,7 @@ def _write_analysis_sheet(wb: Workbook, sheet_name: str,
         cell = ws.cell(row=2, column=col_idx, value=header)
         cell.fill = _HDR_FILL
         cell.font = _HDR_FONT
-        cell.alignment = _CENTRE if col_idx in (1, 10) else _WRAP
+        cell.alignment = _CENTRE if col_idx in (1, 10, 15, 16) else _WRAP
     ws.row_dimensions[2].height = 16
 
     # ── Data rows ─────────────────────────────────────────────────────────────
@@ -397,7 +400,7 @@ def _write_analysis_sheet(wb: Workbook, sheet_name: str,
         for col_idx, field in enumerate(_ANALYSIS_FIELDS, 1):
             cell = ws.cell(row=xl_row, column=col_idx)
             cell.fill = row_fill
-            cell.alignment = _CENTRE if col_idx in (1, 10) else _WRAP
+            cell.alignment = _CENTRE if col_idx in (1, 10, 15, 16) else _WRAP
 
             if col_idx == 1:
                 # Row number

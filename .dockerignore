@@ -1,0 +1,13 @@
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+.git/
+.claude/
+data/
+logs/
+chrome-win64/
+*.xlsx
+*.pdf
+*.docx
+.env

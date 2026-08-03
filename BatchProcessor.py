@@ -578,7 +578,10 @@ def _inject_website_column(path: str, num_sources: int) -> None:
 
 # ── Power BI export ───────────────────────────────────────────────────────────
 
-PBI_COLUMNS = ["BATCH_LABEL", "BATCH_TYPE", "BATCH_START_DATE", "BATCH_SORT_KEY", "REPORT_DATE", "SOURCE", "NNT", "ICT", "RFQ"]
+PBI_COLUMNS = ["BATCH_LABEL", "BATCH_ORDER", "BATCH_TYPE", "BATCH_START_DATE", "BATCH_SORT_KEY", "REPORT_DATE", "SOURCE", "SOURCE_SORT", "NNT", "ICT", "RFQ"]
+
+# Sort key per SOURCE: 0 = eTenders (All) pinned first, 1+ = alphabetical order of the rest
+_SOURCE_SORT = {label: (0 if label == "eTenders (All)" else idx) for idx, (label, _) in enumerate(SOURCES)}
 
 
 def update_power_bi_export(batch_folder: str, date_from: str, date_to: str, batch_type: str) -> None:
@@ -595,6 +598,31 @@ def update_power_bi_export(batch_folder: str, date_from: str, date_to: str, batc
     else:
         batch_label = f"({batch_type}) {start.strftime('%d %b')}-{end.strftime('%d %b %y')}"
 
+    # Read eTenders (All) totals from the Display Equation file — these are the
+    # authoritative totals already calculated by the scraper pipeline, covering
+    # all ICT/RFQ categories correctly. Do not recalculate from raw batch data.
+    eq_file = os.path.join(batch_folder, "Display Equation",
+                           os.path.basename(EQUATION_FILE))
+    etenders_all_total = {"NNT": 0, "ICT": 0, "RFQ": 0}
+    if os.path.exists(eq_file):
+        try:
+            eq_wb = load_workbook(eq_file, data_only=True)
+            eq_ws = eq_wb["Sheet1"]
+            # Row 3 = eTenders (All), cols B/C/D = NNT/ICT/RFQ of newest batch
+            nnt = eq_ws.cell(3, 2).value
+            ict = eq_ws.cell(3, 3).value
+            rfq = eq_ws.cell(3, 4).value
+            etenders_all_total = {
+                "NNT": int(nnt) if isinstance(nnt, (int, float)) else 0,
+                "ICT": int(ict) if isinstance(ict, (int, float)) else 0,
+                "RFQ": int(rfq) if isinstance(rfq, (int, float)) else 0,
+            }
+            logging.info(f"Power BI: eTenders (All) totals from Display Equation — "
+                         f"NNT={etenders_all_total['NNT']} ICT={etenders_all_total['ICT']} "
+                         f"RFQ={etenders_all_total['RFQ']}")
+        except Exception as e:
+            logging.warning(f"Could not read Display Equation for eTenders (All): {e}")
+
     # Build new rows — one per source per day
     new_rows = []
     batches_dir = os.path.join(batch_folder, "batches")
@@ -610,6 +638,10 @@ def update_power_bi_export(batch_folder: str, date_from: str, date_to: str, batc
         else:
             day_counts = {source: {"NNT": 0, "ICT": 0, "RFQ": 0} for source, _ in SOURCES}
 
+        # Override eTenders (All) with the authoritative Display Equation total
+        # (only on the report date — last day of batch — to avoid splitting across days)
+        day_counts["eTenders (All)"] = etenders_all_total if current == end else {"NNT": 0, "ICT": 0, "RFQ": 0}
+
         for source, _ in SOURCES:
             data = day_counts.get(source, {"NNT": 0, "ICT": 0, "RFQ": 0})
             new_rows.append({
@@ -619,6 +651,7 @@ def update_power_bi_export(batch_folder: str, date_from: str, date_to: str, batc
                 "BATCH_SORT_KEY":   -start.toordinal(),
                 "REPORT_DATE":      current,
                 "SOURCE":           source,
+                "SOURCE_SORT":      _SOURCE_SORT.get(source, 999),
                 "NNT":              data["NNT"],
                 "ICT":              data["ICT"],
                 "RFQ":              data["RFQ"],
@@ -626,7 +659,7 @@ def update_power_bi_export(batch_folder: str, date_from: str, date_to: str, batc
 
         current += timedelta(days=1)
 
-    new_df = pd.DataFrame(new_rows, columns=PBI_COLUMNS)
+    new_df = pd.DataFrame(new_rows, columns=[c for c in PBI_COLUMNS if c != "BATCH_ORDER"])
 
     # Load existing data and drop any prior rows for this batch (idempotent)
     if os.path.exists(POWER_BI_FILE):
@@ -641,8 +674,21 @@ def update_power_bi_export(batch_folder: str, date_from: str, date_to: str, batc
 
     # Sort newest batch first — keep ALL batches, no rolling trim
     combined["REPORT_DATE"] = pd.to_datetime(combined["REPORT_DATE"])
+    combined["BATCH_START_DATE"] = pd.to_datetime(combined["BATCH_START_DATE"])
     combined.sort_values("REPORT_DATE", ascending=False, inplace=True)
     combined.reset_index(drop=True, inplace=True)
+
+    # Assign BATCH_ORDER: 1 = newest batch, incrementing for older batches
+    unique_batches = (
+        combined[["BATCH_LABEL", "BATCH_START_DATE"]]
+        .drop_duplicates("BATCH_LABEL")
+        .sort_values("BATCH_START_DATE", ascending=False)
+        .reset_index(drop=True)
+    )
+    unique_batches["BATCH_ORDER"] = unique_batches.index + 1
+    order_map = dict(zip(unique_batches["BATCH_LABEL"], unique_batches["BATCH_ORDER"]))
+    combined["BATCH_ORDER"] = combined["BATCH_LABEL"].map(order_map)
+    combined = combined[PBI_COLUMNS]
 
     # Write with styled header and named Excel Table for Power BI compatibility
     from openpyxl.worksheet.table import Table, TableStyleInfo
@@ -752,20 +798,36 @@ def update_master_tenders(batch_folder: str) -> None:
     all_cols = ["REPORT_DATE", "RECORD_ID"] + [c for c in _MASTER_OUTPUT_COLS if c != "REPORT_DATE"]
     combined.insert(1, "RECORD_ID", range(1, len(combined) + 1))
 
+    from openpyxl.styles import Alignment, Border, Side
+
+    MASTER_HDR_FONT = Font(bold=True, color="FFFFFF", size=11)
+    MASTER_HDR_FILL = PatternFill("solid", fgColor="375623")
+    MASTER_ROW_FILL_ODD  = PatternFill("solid", fgColor="E2EFDA")
+    MASTER_ROW_FILL_EVEN = PatternFill("solid", fgColor="FFFFFF")
+    THIN_BORDER = Border(
+        bottom=Side(style="thin", color="A9D18E"),
+        right=Side(style="thin", color="A9D18E"),
+    )
+
     os.makedirs(os.path.dirname(MASTER_FILE), exist_ok=True)
     wb = Workbook()
     ws = wb.active
-    ws.title = "Tender Data"
+    ws.title = "TENDER REPORT"
 
     for col_idx, col_name in enumerate(all_cols, 1):
         cell = ws.cell(row=1, column=col_idx, value=col_name)
-        cell.font = HDR_FONT
-        cell.fill = HDR_FILL
+        cell.font = MASTER_HDR_FONT
+        cell.fill = MASTER_HDR_FILL
+        cell.alignment = Alignment(horizontal="center", vertical="center")
+        ws.row_dimensions[1].height = 20
 
     for row_idx, row in enumerate(combined[all_cols].itertuples(index=False), 2):
+        row_fill = MASTER_ROW_FILL_ODD if row_idx % 2 == 0 else MASTER_ROW_FILL_EVEN
         for col_idx, col_name in enumerate(all_cols, 1):
             value = getattr(row, col_name)
             cell  = ws.cell(row=row_idx, column=col_idx, value=value)
+            cell.fill = row_fill
+            cell.border = THIN_BORDER
             if col_name in DATE_COLUMNS and value and not pd.isna(value):
                 try:
                     if not isinstance(value, datetime):
@@ -775,10 +837,19 @@ def update_master_tenders(batch_folder: str) -> None:
                 except Exception:
                     pass
 
+    # Auto-fit column widths
+    for col_idx, col_name in enumerate(all_cols, 1):
+        col_letter = get_column_letter(col_idx)
+        max_len = max(
+            len(str(col_name)),
+            *[len(str(combined[col_name].iloc[i])) for i in range(min(50, len(combined)))]
+        ) if len(combined) > 0 else len(col_name)
+        ws.column_dimensions[col_letter].width = min(max_len + 2, 60)
+
     last_col = get_column_letter(len(all_cols))
     last_row = len(combined) + 1
     tbl = Table(displayName="MasterTenders", ref=f"A1:{last_col}{last_row}")
-    tbl.tableStyleInfo = TableStyleInfo(name="TableStyleMedium2", showRowStripes=True)
+    tbl.tableStyleInfo = TableStyleInfo(name="TableStyleLight21", showRowStripes=True)
     ws.add_table(tbl)
 
     wb.save(MASTER_FILE)
