@@ -13,7 +13,7 @@ from datetime import datetime, timedelta
 from openpyxl import load_workbook, Workbook
 from openpyxl.styles import Font, PatternFill, Border, Side, Alignment
 
-EQUATION_FILE = (
+EQUATION_FILE = os.environ.get("EQUATION_FILE_PATH") or (
     r"C:\Users\CheltonGraham\OneDrive - Amidel (Pty) Ltd"
     r"\Documents\Sales\Sales Auto Hub\Scraping and Reports"
     r"\ICT & RFQ\Old Method\Bhekis conditional Product\RFQ_and_ICT_Equation.xlsx"
@@ -461,8 +461,16 @@ def update_equation_file(counts: dict, batch_type: str, report_date: datetime,
     """
     import shutil
 
-    wb = load_workbook(EQUATION_FILE)
-    ws = wb["Sheet1"]
+    if os.path.exists(EQUATION_FILE):
+        wb = load_workbook(EQUATION_FILE)
+        ws = wb["Sheet1"]
+    else:
+        parent = os.path.dirname(EQUATION_FILE)
+        if parent:
+            os.makedirs(parent, exist_ok=True)
+        wb = Workbook()
+        ws = wb.active
+        ws.title = "Sheet1"
 
     batch_label = f"({batch_type}) {report_date.strftime('%d/%m/%y')}"
 

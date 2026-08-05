@@ -29,5 +29,8 @@ COPY config.json ./
 # ── Output volume (data written here at runtime) ──────────────────────────────
 VOLUME ["/app/data"]
 
+# ── Equation file lives inside the data mount so it persists across runs ─────
+ENV EQUATION_FILE_PATH=/app/data/RFQ_and_ICT_Equation.xlsx
+
 # ── Entry point ───────────────────────────────────────────────────────────────
 ENTRYPOINT ["python", "_run_headless.py"]
