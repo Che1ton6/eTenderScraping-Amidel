@@ -328,6 +328,7 @@ class TenderScraper:
             # Extract document links
             docLinks = self.extractDocumentLinks()
             tenderInfo["LINK"] = docLinks[0] if docLinks else ""
+            tenderInfo["_DOCUMENT_LINKS"] = docLinks
             
             # Check for duplicates
             if self.utils.isDuplicate(tenderInfo, self.processedTenders):
