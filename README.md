@@ -183,6 +183,82 @@ The equation file must be **closed in Excel** before running the scraper, otherw
 "logging": { "level": "DEBUG", "file": "logs/scraper.log" }
 ```
 
+## Azure App Service deployment (headless)
+
+This repo runs on the `etenderwebapp` Linux App Service in the
+`TenderAutomation` resource group. The `etender-trigger` Logic App wakes it
+Mon/Thu 06:00 SAST via an authenticated HTTP POST.
+
+### Runtime shape
+
+- `Dockerfile` builds a container with Chrome + Tesseract + Python deps and
+  starts `gunicorn app:app` on `$PORT` (default 8000).
+- `app.py` exposes:
+  - `GET  /healthz` — liveness probe (always 200).
+  - `POST /run-scrape` — triggers a scrape. Requires header
+    `X-Trigger-Secret: <RUN_SCRAPE_SECRET>`. Optional JSON body may override
+    `batch_type` / `date_from` / `date_to`. In-memory lock returns 409 if a
+    scrape is already running.
+- Scrape flow inside `/run-scrape`:
+  1. `sharepoint_client.download_master()` → `data/master_tenders.xlsx`
+  2. `_run_headless.run_scrape()` (etenders scrape + apply_template_schema)
+  3. `sharepoint_client.upload_master()` back to SharePoint
+  4. `sharepoint_client.upload_batch_folder()` for the per-scrape output
+
+### Required env vars on the App Service
+
+| Var | Purpose |
+| --- | --- |
+| `RUN_SCRAPE_SECRET` | Shared secret the Logic App sends in `X-Trigger-Secret` |
+| `SHAREPOINT_SITE_URL` | e.g. `https://amidel.sharepoint.com/sites/XYZ` |
+| `SHAREPOINT_FOLDER_PATH` | Path inside the default doc library, e.g. `TenderAutomation/master` |
+| `SHAREPOINT_MASTER_FILENAME` | Optional; defaults to `master_tenders.xlsx` |
+| **Auth — pick ONE path:** | |
+| `USE_MANAGED_IDENTITY=1` | Preferred. Requires system-assigned MI + Graph `Sites.ReadWrite.All`. |
+| `SHAREPOINT_TENANT_ID` + `SHAREPOINT_CLIENT_ID` + `SHAREPOINT_CLIENT_SECRET` | Fallback: app-registration client credentials. |
+| `SKIP_SHAREPOINT=1` | Optional; run the scrape locally without touching SharePoint. |
+
+See the TODO block at the top of `sharepoint_client.py` for the full
+tenant-setup checklist Siyabonga needs to complete before the first run.
+
+### Wiring the Logic App (`etender-trigger`)
+
+1. **Recurrence** trigger — Mon + Thu, 06:00 SAST.
+2. **HTTP** action:
+   - Method: `POST`
+   - URI: `https://etenderwebapp.azurewebsites.net/run-scrape`
+   - Headers: `X-Trigger-Secret = <RUN_SCRAPE_SECRET>`,
+     `Content-Type = application/json`
+   - Body: `{}` (empty — the app auto-derives batch/date from today's weekday)
+3. Set the action's timeout to at least 30 minutes.
+
+### Local development
+
+```powershell
+# Install deps
+python -m pip install -r requirements.txt
+
+# Run once from the CLI (no HTTP, no SharePoint):
+$env:SKIP_SHAREPOINT="1"; python _run_headless.py --batch T --from 2026-08-25 --to 2026-08-27
+
+# Or run the Flask app:
+$env:RUN_SCRAPE_SECRET="devsecret"; $env:SKIP_SHAREPOINT="1"; python app.py
+
+# Then in another shell:
+curl -X POST http://localhost:8000/healthz
+curl -X POST http://localhost:8000/run-scrape -H "X-Trigger-Secret: wrong"        # -> 401
+curl -X POST http://localhost:8000/run-scrape -H "X-Trigger-Secret: devsecret" \
+     -H "Content-Type: application/json" -d '{"batch_type":"T"}'                   # -> 200
+```
+
+### Retired scrape modes
+
+Watchlist / full / cybersecurity modes were retired 2026-08-27. Only
+`etenders` runs from this deployment. The legacy scraper modules
+(`WatchlistScrapers.py`, `SeleniumWatchlistScrapers.py`,
+`RaymondMhlabaScraper.py`, `JPCScraper.py`, `ECDPWScraper.py`) remain in the
+repo for reference but are not imported by `_run_headless.py` or `app.py`.
+
 ## License
 
 For internal business use by Amidel (Pty) Ltd. Please respect the eTenders website's terms of service.

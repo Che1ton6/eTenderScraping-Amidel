@@ -1,12 +1,9 @@
 FROM python:3.11-slim
 
-# ── System dependencies ───────────────────────────────────────────────────────
+# System deps: Chrome + Tesseract + fonts
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    # Chrome for Selenium
     wget gnupg ca-certificates \
-    # Tesseract OCR (used by pytesseract)
     tesseract-ocr \
-    # Fonts and misc
     fonts-liberation libglib2.0-0 libnss3 libx11-6 libxcb1 libxcomposite1 \
     libxcursor1 libxdamage1 libxext6 libxfixes3 libxi6 libxrandr2 libxrender1 \
     libxss1 libxtst6 libgbm1 libasound2 libatk1.0-0 libatk-bridge2.0-0 \
@@ -17,20 +14,20 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm /tmp/chrome.deb \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
 
-# ── Python dependencies ───────────────────────────────────────────────────────
 WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# ── App source ────────────────────────────────────────────────────────────────
 COPY *.py ./
 COPY config.json ./
 
-# ── Output volume (data written here at runtime) ──────────────────────────────
 VOLUME ["/app/data"]
 
-# ── Equation file lives inside the data mount so it persists across runs ─────
 ENV EQUATION_FILE_PATH=/app/data/RFQ_and_ICT_Equation.xlsx
+ENV PORT=8000
 
-# ── Entry point ───────────────────────────────────────────────────────────────
-ENTRYPOINT ["python", "_run_headless.py"]
+EXPOSE 8000
+
+# Long timeout: a full scrape can take 5-10+ minutes; the sync HTTP request
+# from the Logic App is held open for its duration.
+CMD ["sh", "-c", "gunicorn --bind 0.0.0.0:${PORT:-8000} --workers 1 --threads 4 --timeout 1800 app:app"]
