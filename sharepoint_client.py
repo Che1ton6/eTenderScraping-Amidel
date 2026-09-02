@@ -139,18 +139,40 @@ def upload_master(local_src: str) -> None:
 
 
 def upload_batch_folder(local_folder: str) -> int:
+    """
+    Upload the per-scrape output to SharePoint under Scrapes/<batch-name>/.
+
+    Only three things are uploaded — the rest of what BatchProcessor writes
+    locally (batches/, Tender Analysis, PowerBI export) stays local:
+        - end product/**
+        - Display Equation/**
+        - Tender Summary.xlsx  (top-level file)
+    """
     base = Path(local_folder)
     if not base.is_dir():
         raise FileNotFoundError(f"Batch folder not found: {local_folder}")
-    remote_root = _item_path("batches", base.name)
+
+    remote_root = _item_path("Scrapes", base.name)
+    keep_dirs = ("end product", "Display Equation")
+    keep_files_root = ("Tender Summary.xlsx",)
+
     count = 0
     for path in base.rglob("*"):
         if not path.is_file():
             continue
-        rel = path.relative_to(base).as_posix()
-        _upload_file(str(path), f"{remote_root}/{rel}")
+        rel = path.relative_to(base)
+        parts = rel.parts
+        keep = False
+        if len(parts) == 1 and parts[0] in keep_files_root:
+            keep = True
+        elif len(parts) >= 2 and parts[0] in keep_dirs:
+            keep = True
+        if not keep:
+            continue
+        _upload_file(str(path), f"{remote_root}/{rel.as_posix()}")
         count += 1
-    log.info("Uploaded batch folder %s -> SharePoint (%d files)", base.name, count)
+
+    log.info("Uploaded batch folder %s -> SharePoint/Scrapes (%d files)", base.name, count)
     return count
 
 
