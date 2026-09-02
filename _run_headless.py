@@ -168,7 +168,6 @@ def run_scrape(overrides: Optional[dict] = None) -> dict:
     )
     from TenderSummary import create_tender_summary
     from TenderAnalysisGenerator import create_tender_analysis
-    from CybersecurityTenders import create_cybersecurity_tenders
     from TenderScraper import TenderScraper
 
     report_date = datetime.strptime(date_to, "%Y-%m-%d")
@@ -207,7 +206,6 @@ def run_scrape(overrides: Optional[dict] = None) -> dict:
 
     create_tender_summary(df, batch_folder)
     create_tender_analysis(df, batch_folder, report_date_str)
-    create_cybersecurity_tenders(df, batch_folder)
 
     counts = calculate_counts(df)
     update_equation_file(counts, batch_type, report_date, batch_folder)

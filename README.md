@@ -251,13 +251,14 @@ curl -X POST http://localhost:8000/run-scrape -H "X-Trigger-Secret: devsecret" \
      -H "Content-Type: application/json" -d '{"batch_type":"T"}'                   # -> 200
 ```
 
-### Retired scrape modes
+### Scope
 
-Watchlist / full / cybersecurity modes were retired 2026-08-27. Only
-`etenders` runs from this deployment. The legacy scraper modules
-(`WatchlistScrapers.py`, `SeleniumWatchlistScrapers.py`,
-`RaymondMhlabaScraper.py`, `JPCScraper.py`, `ECDPWScraper.py`) remain in the
-repo for reference but are not imported by `_run_headless.py` or `app.py`.
+This deployment runs **eTenders.gov.za only**. Watchlist, "all but eTenders",
+ECDPW, and cybersecurity modes were retired 2026-08-27 and the corresponding
+scraper modules have been removed from this repo. The desktop GUI
+(`main.py`, `Amidel eTender Scraper.pyw`) is not part of the headless
+deployment either — it lives in the sister local repo. If you need to run
+any of those retired paths, use the local repo, not this one.
 
 ## License
 

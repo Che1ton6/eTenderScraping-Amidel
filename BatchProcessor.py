@@ -114,7 +114,7 @@ def create_batch_folder(date_from: str, date_to: str, batch_type: str,
                         root_dir: str = None) -> str:
     """
     Create and return the root batch folder.
-    root_dir defaults to data/etenders.gov.za; pass data/All_Tenders for watchlist runs.
+    root_dir defaults to data/etenders.gov.za (the only mode this deployment runs).
     """
     if root_dir is None:
         root_dir = os.path.join("data", "etenders.gov.za")
