@@ -98,7 +98,7 @@ TENDER_COLUMNS = [
     "ESUBMISSION", "CATEGORY", "IS_THERE_A_BRIEFING_SESSION",
     "BRIEFING_DATE", "COMPULSORY_BRIEFING", "BRIEFING_SESSION_VENUE", "LINK", "SOE",
     "COST_OF_SALES_ESTIMATE", "CAPABILITY_AVAILABLE", "CAPABILITY_GROUP", "REQUIREMENTS",
-    "DUPLICATED",
+    "DUPLICATED", "INGESTION_METHOD",
 ]
 # End product and daily batch files exclude briefing fields (Tender Summary only)
 BATCH_COLUMNS = [c for c in TENDER_COLUMNS if c != "BRIEFING_DATE"]
@@ -114,7 +114,7 @@ def create_batch_folder(date_from: str, date_to: str, batch_type: str,
                         root_dir: str = None) -> str:
     """
     Create and return the root batch folder.
-    root_dir defaults to data/etenders.gov.za; pass data/All_Tenders for watchlist runs.
+    root_dir defaults to data/etenders.gov.za (the only mode this deployment runs).
     """
     if root_dir is None:
         root_dir = os.path.join("data", "etenders.gov.za")
@@ -763,13 +763,15 @@ def update_master_tenders(batch_folder: str) -> None:
     new_df = new_df[[c for c in _MASTER_OUTPUT_COLS if c in new_df.columns]]
     for col in _MASTER_OUTPUT_COLS:
         if col not in new_df.columns:
-            new_df[col] = None
+            new_df[col] = "AUTOMATIC" if col == "INGESTION_METHOD" else None
     new_df = new_df[_MASTER_OUTPUT_COLS]
 
     # Load existing master
     if os.path.exists(MASTER_FILE):
         try:
             existing = pd.read_excel(MASTER_FILE, dtype=str)
+            from master_schema import read_template_schema
+            existing = read_template_schema(existing)
             existing = existing[[c for c in _MASTER_OUTPUT_COLS if c in existing.columns]]
             for col in _MASTER_OUTPUT_COLS:
                 if col not in existing.columns:
@@ -803,18 +805,21 @@ def update_master_tenders(batch_folder: str) -> None:
     combined.sort_values("REPORT_DATE", ascending=False, inplace=True)
     combined.reset_index(drop=True, inplace=True)
 
-    all_cols = ["REPORT_DATE", "RECORD_ID"] + [c for c in _MASTER_OUTPUT_COLS if c != "REPORT_DATE"]
     combined.insert(1, "RECORD_ID", range(1, len(combined) + 1))
+
+    from master_schema import apply_template_schema, TEMPLATE_COLUMN_ORDER
+    combined = apply_template_schema(combined)
+    all_cols = TEMPLATE_COLUMN_ORDER
 
     from openpyxl.styles import Alignment, Border, Side
 
     MASTER_HDR_FONT = Font(bold=True, color="FFFFFF", size=11)
-    MASTER_HDR_FILL = PatternFill("solid", fgColor="375623")
-    MASTER_ROW_FILL_ODD  = PatternFill("solid", fgColor="E2EFDA")
+    MASTER_HDR_FILL = PatternFill("solid", fgColor="305496")
+    MASTER_ROW_FILL_ODD  = PatternFill("solid", fgColor="DDEBF7")
     MASTER_ROW_FILL_EVEN = PatternFill("solid", fgColor="FFFFFF")
     THIN_BORDER = Border(
-        bottom=Side(style="thin", color="A9D18E"),
-        right=Side(style="thin", color="A9D18E"),
+        bottom=Side(style="thin", color="9DC3E6"),
+        right=Side(style="thin", color="9DC3E6"),
     )
 
     os.makedirs(os.path.dirname(MASTER_FILE), exist_ok=True)
@@ -829,10 +834,12 @@ def update_master_tenders(batch_folder: str) -> None:
         cell.alignment = Alignment(horizontal="center", vertical="center")
         ws.row_dimensions[1].height = 20
 
-    for row_idx, row in enumerate(combined[all_cols].itertuples(index=False), 2):
+    _row_values = combined[all_cols].to_numpy()
+    for row_idx in range(2, len(_row_values) + 2):
         row_fill = MASTER_ROW_FILL_ODD if row_idx % 2 == 0 else MASTER_ROW_FILL_EVEN
+        row_arr = _row_values[row_idx - 2]
         for col_idx, col_name in enumerate(all_cols, 1):
-            value = getattr(row, col_name)
+            value = row_arr[col_idx - 1]
             cell  = ws.cell(row=row_idx, column=col_idx, value=value)
             cell.fill = row_fill
             cell.border = THIN_BORDER
@@ -857,7 +864,7 @@ def update_master_tenders(batch_folder: str) -> None:
     last_col = get_column_letter(len(all_cols))
     last_row = len(combined) + 1
     tbl = Table(displayName="MasterTenders", ref=f"A1:{last_col}{last_row}")
-    tbl.tableStyleInfo = TableStyleInfo(name="TableStyleLight21", showRowStripes=True)
+    tbl.tableStyleInfo = TableStyleInfo(name="TableStyleMedium2", showRowStripes=True)
     ws.add_table(tbl)
 
     wb.save(MASTER_FILE)
