@@ -1,0 +1,92 @@
+# Build the eTender scraper container, push it to GitHub Container Registry,
+# and tell the Azure App Service `etenderwebapp` to pull the new image.
+#
+# =============================================================================
+# One-time setup before this workflow will succeed:
+# =============================================================================
+#
+# 1. On Azure -> etenderwebapp -> Overview, click "Download publish profile".
+#    Open the downloaded .PublishSettings file in Notepad, copy the entire XML
+#    contents. In GitHub go to:
+#      Settings -> Secrets and variables -> Actions -> New repository secret
+#      Name:  AZURE_WEBAPP_PUBLISH_PROFILE
+#      Value: <the XML you copied>
+#
+# 2. First push: this workflow will build and publish the container to
+#    ghcr.io/<your-user>/etenderscraping-amidel. By default, GHCR packages
+#    inherit the repo's visibility (private for a private repo). App Service
+#    can't pull a private image without credentials. Pick one:
+#
+#      (a) SIMPLE - make the package public:
+#          After the first successful push, go to GitHub -> your profile ->
+#          Packages -> etenderscraping-amidel -> Package settings ->
+#          Change visibility -> Public.
+#          The container has no secrets baked in; all secrets come from
+#          App Service env vars at runtime, so public is safe.
+#
+#      (b) SECURE - keep the package private:
+#          Create a GitHub PAT with read:packages, then on etenderwebapp ->
+#          Configuration -> Application settings, add:
+#              DOCKER_REGISTRY_SERVER_URL      = https://ghcr.io
+#              DOCKER_REGISTRY_SERVER_USERNAME = <your-github-username>
+#              DOCKER_REGISTRY_SERVER_PASSWORD = <the PAT>
+# =============================================================================
+
+name: Build and deploy container
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch: {}
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+  AZURE_WEBAPP_NAME: etenderwebapp
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      image_tag: ${{ steps.meta.outputs.image_tag }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Compute image tag
+        id: meta
+        run: |
+          # Lowercase the image name (Docker registries require it).
+          echo "image_tag=${REGISTRY}/${IMAGE_NAME,,}:${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+          echo "image_latest=${REGISTRY}/${IMAGE_NAME,,}:latest" >> "$GITHUB_OUTPUT"
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: |
+            ${{ steps.meta.outputs.image_tag }}
+            ${{ steps.meta.outputs.image_latest }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  deploy:
+    needs: build-and-push
+    runs-on: ubuntu-latest
+    steps:
+      - name: Deploy image to App Service
+        uses: azure/webapps-deploy@v3
+        with:
+          app-name: ${{ env.AZURE_WEBAPP_NAME }}
+          publish-profile: ${{ secrets.AZURE_WEBAPP_PUBLISH_PROFILE }}
+          images: ${{ needs.build-and-push.outputs.image_tag }}
