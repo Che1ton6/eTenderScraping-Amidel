@@ -36,7 +36,12 @@ from typing import Optional
 from flask import Flask, jsonify, request
 
 from _run_headless import run_scrape
-from BatchProcessor import MASTER_FILE
+from BatchProcessor import AUTO_FILE
+import manual_reconcile
+
+# Derived paths — auto and manual are inputs to the merge, master is the output
+MASTER_FILE = os.path.join(os.path.dirname(AUTO_FILE), "master_tenders.xlsx")
+MANUAL_FILE = os.path.join(os.path.dirname(AUTO_FILE), "manual_tenders.xlsx")
 
 try:
     import sharepoint_client
@@ -88,23 +93,39 @@ def _do_scrape(run_id: str, overrides: dict, skip_sp: bool) -> None:
         error=None,
     )
     try:
+        # 1. Pull existing auto ledger so the scraper appends, not restarts
         if not skip_sp and sharepoint_client is not None:
             try:
-                sharepoint_client.download_master(MASTER_FILE)
+                sharepoint_client.download_auto(AUTO_FILE)
             except Exception as e:
-                log.warning("SharePoint download_master failed (continuing with local): %s", e)
+                log.warning("SharePoint download_auto failed (continuing with local): %s", e)
 
+        # 2. Run the scrape (writes to AUTO_FILE via BatchProcessor.update_auto_tenders)
         summary = run_scrape(overrides=overrides)
 
+        # 3. Upload the fresh auto ledger + batch folder
         if not skip_sp and sharepoint_client is not None:
             try:
-                if os.path.exists(MASTER_FILE):
-                    sharepoint_client.upload_master(MASTER_FILE)
+                if os.path.exists(AUTO_FILE):
+                    sharepoint_client.upload_auto(AUTO_FILE)
                 if summary.get("batch_folder"):
                     sharepoint_client.upload_batch_folder(summary["batch_folder"])
             except Exception as e:
-                log.exception("SharePoint upload failed: %s", e)
+                log.exception("SharePoint auto/batch upload failed: %s", e)
                 summary["sharepoint_upload_error"] = str(e)
+
+        # 4. Pull latest manual file, merge auto+manual -> master, upload master
+        if not skip_sp and sharepoint_client is not None:
+            try:
+                has_manual = sharepoint_client.download_manual(MANUAL_FILE)
+                merge_stats = manual_reconcile.merge_to_master(
+                    AUTO_FILE, MANUAL_FILE if has_manual else None, MASTER_FILE,
+                )
+                summary["merge"] = merge_stats
+                sharepoint_client.upload_master(MASTER_FILE)
+            except Exception as e:
+                log.exception("Manual reconcile / master upload failed: %s", e)
+                summary["merge_error"] = str(e)
 
         _set_state(
             state="completed",

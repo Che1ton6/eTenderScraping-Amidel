@@ -164,7 +164,7 @@ def run_scrape(overrides: Optional[dict] = None) -> dict:
     from BatchProcessor import (
         create_batch_folder, save_daily_file, create_end_product,
         update_equation_file, calculate_counts, update_power_bi_export,
-        update_master_tenders, merge_and_flag_duplicates, MASTER_FILE,
+        update_auto_tenders, merge_and_flag_duplicates, AUTO_FILE,
     )
     from TenderSummary import create_tender_summary
     from TenderAnalysisGenerator import create_tender_analysis
@@ -174,9 +174,9 @@ def run_scrape(overrides: Optional[dict] = None) -> dict:
     report_date_str = report_date.strftime("%d %b %Y").lstrip("0")
 
     rows_before = 0
-    if os.path.exists(MASTER_FILE):
+    if os.path.exists(AUTO_FILE):
         try:
-            rows_before = len(pd.read_excel(MASTER_FILE, dtype=str))
+            rows_before = len(pd.read_excel(AUTO_FILE, dtype=str))
         except Exception:
             rows_before = 0
 
@@ -211,12 +211,12 @@ def run_scrape(overrides: Optional[dict] = None) -> dict:
     update_equation_file(counts, batch_type, report_date, batch_folder)
     create_end_product(df, date_from, date_to, batch_type, report_date, batch_folder)
     update_power_bi_export(batch_folder, date_from, date_to, batch_type)
-    update_master_tenders(batch_folder)
+    update_auto_tenders(batch_folder)
 
     rows_after = 0
-    if os.path.exists(MASTER_FILE):
+    if os.path.exists(AUTO_FILE):
         try:
-            rows_after = len(pd.read_excel(MASTER_FILE, dtype=str))
+            rows_after = len(pd.read_excel(AUTO_FILE, dtype=str))
         except Exception:
             rows_after = 0
 

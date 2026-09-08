@@ -1,36 +1,23 @@
 """
 SharePoint client for the eTender scraper (Azure App Service deployment).
 
-# =============================================================================
-# TODO (Siyabonga / Azure setup) - before this module can succeed at runtime:
-# =============================================================================
-# Pick ONE of two auth paths and configure it on the etenderwebapp App Service.
-#
-# PATH A - Managed Identity (recommended)
-#   1. On the etenderwebapp App Service, Identity -> System-assigned -> On.
-#   2. Grant that identity Microsoft Graph API permission
-#      `Sites.ReadWrite.All` (application), OR use SharePoint site-level
-#      permissions via `Sites.Selected` + PowerShell grant.
-#   3. Set env var USE_MANAGED_IDENTITY=1 on the App Service.
-#   4. Leave SHAREPOINT_TENANT_ID / _CLIENT_ID / _CLIENT_SECRET unset.
-#
-# PATH B - App registration + client secret (fallback)
-#   1. Azure AD -> App registrations -> New registration.
-#   2. API permissions -> Microsoft Graph -> Application -> Sites.ReadWrite.All.
-#      Grant admin consent.
-#   3. Certificates & secrets -> New client secret. Copy the value.
-#   4. On the App Service, set env vars:
-#         SHAREPOINT_TENANT_ID     = <tenant guid>
-#         SHAREPOINT_CLIENT_ID     = <app registration client id>
-#         SHAREPOINT_CLIENT_SECRET = <secret value>
-#      Leave USE_MANAGED_IDENTITY unset.
-#
-# ALWAYS required (either path):
-#   SHAREPOINT_SITE_URL      = https://amidel.sharepoint.com/sites/<SITE>
-#   SHAREPOINT_FOLDER_PATH   = <server-relative path inside the site's default
-#                              document library, e.g. "TenderAutomation/master">
-#   SHAREPOINT_MASTER_FILENAME = master_tenders.xlsx   (optional; this is default)
-# =============================================================================
+Handles three files under SHAREPOINT_FOLDER_PATH:
+    auto_tenders.xlsx           <- scraper writes; download to append, upload to persist
+    master_tenders.xlsx         <- derived (merge of auto + manual); Power BI reads
+    Manual_Scrapes/manual_tenders.xlsx  <- humans write; scraper only reads
+
+Plus the batch folder uploads to Auto_Scrapes/<batch-name>/.
+
+Env vars (auth):
+    USE_MANAGED_IDENTITY=1                (path A) OR
+    SHAREPOINT_TENANT_ID / _CLIENT_ID / _CLIENT_SECRET  (path B)
+
+Env vars (paths):
+    SHAREPOINT_SITE_URL                   required
+    SHAREPOINT_FOLDER_PATH                required, e.g. "etenders.gov.za (Tender Scraper)"
+    SHAREPOINT_AUTO_FILENAME              default: auto_tenders.xlsx
+    SHAREPOINT_MASTER_FILENAME            default: master_tenders.xlsx
+    SHAREPOINT_MANUAL_SUBPATH             default: Manual_Scrapes/manual_tenders.xlsx
 """
 
 from __future__ import annotations
@@ -48,7 +35,9 @@ log = logging.getLogger("etender.sharepoint")
 GRAPH = "https://graph.microsoft.com/v1.0"
 GRAPH_SCOPE = "https://graph.microsoft.com/.default"
 
+AUTO_FILENAME_DEFAULT = "auto_tenders.xlsx"
 MASTER_FILENAME_DEFAULT = "master_tenders.xlsx"
+MANUAL_SUBPATH_DEFAULT = "Manual_Scrapes/manual_tenders.xlsx"
 
 
 def _acquire_token() -> str:
@@ -113,23 +102,43 @@ def _item_path(*parts: str) -> str:
     return "/".join(p for p in (folder, joined) if p)
 
 
-def download_master(local_dest: str) -> bool:
-    """Pull master from SharePoint. Returns False if not yet present."""
-    filename = os.environ.get("SHAREPOINT_MASTER_FILENAME", MASTER_FILENAME_DEFAULT)
+def _download(remote_subpath: str, local_dest: str) -> bool:
+    """Generic download helper. remote_subpath is relative to SHAREPOINT_FOLDER_PATH."""
     token = _acquire_token()
     with httpx.Client(timeout=120.0) as client:
         _, drive_id = _get_site_and_drive(client, token)
         headers = {"Authorization": f"Bearer {token}"}
-        url = f"{GRAPH}/drives/{drive_id}/root:/{quote(_item_path(filename))}:/content"
+        url = f"{GRAPH}/drives/{drive_id}/root:/{quote(_item_path(remote_subpath))}:/content"
         r = client.get(url, headers=headers, follow_redirects=True)
         if r.status_code == 404:
-            log.info("SharePoint master not found (first run?): %s", filename)
+            log.info("SharePoint file not found: %s", remote_subpath)
             return False
         r.raise_for_status()
         Path(local_dest).parent.mkdir(parents=True, exist_ok=True)
         Path(local_dest).write_bytes(r.content)
-        log.info("Downloaded SharePoint master -> %s (%d bytes)", local_dest, len(r.content))
+        log.info("Downloaded %s -> %s (%d bytes)", remote_subpath, local_dest, len(r.content))
         return True
+
+
+def download_auto(local_dest: str) -> bool:
+    filename = os.environ.get("SHAREPOINT_AUTO_FILENAME", AUTO_FILENAME_DEFAULT)
+    return _download(filename, local_dest)
+
+
+def download_master(local_dest: str) -> bool:
+    filename = os.environ.get("SHAREPOINT_MASTER_FILENAME", MASTER_FILENAME_DEFAULT)
+    return _download(filename, local_dest)
+
+
+def download_manual(local_dest: str) -> bool:
+    subpath = os.environ.get("SHAREPOINT_MANUAL_SUBPATH", MANUAL_SUBPATH_DEFAULT)
+    return _download(subpath, local_dest)
+
+
+def upload_auto(local_src: str) -> None:
+    filename = os.environ.get("SHAREPOINT_AUTO_FILENAME", AUTO_FILENAME_DEFAULT)
+    _upload_file(local_src, _item_path(filename))
+    log.info("Uploaded auto -> SharePoint: %s", filename)
 
 
 def upload_master(local_src: str) -> None:

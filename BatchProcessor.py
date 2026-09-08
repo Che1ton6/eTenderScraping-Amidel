@@ -729,16 +729,22 @@ def update_power_bi_export(batch_folder: str, date_from: str, date_to: str, batc
     logging.info(f"Power BI export updated: {batch_label} ({len(new_rows)} rows) -> {POWER_BI_FILE}")
 
 
-# ── Master tender ledger (cumulative, never trimmed) ──────────────────────────
+# ── Auto tender ledger (cumulative, never trimmed) ────────────────────────────
+# Scraper writes to auto_tenders.xlsx. This is one of two inputs to the merge
+# step (manual_reconcile.merge_to_master) that produces master_tenders.xlsx —
+# the file Power BI actually reads.
 
-MASTER_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "master_tenders.xlsx")
-_MASTER_OUTPUT_COLS = [c for c in TENDER_COLUMNS if c != "RECORD_ID"]
+AUTO_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "auto_tenders.xlsx")
+MASTER_FILE = AUTO_FILE  # deprecated alias for callers still using the old name
+_AUTO_OUTPUT_COLS = [c for c in TENDER_COLUMNS if c != "RECORD_ID"]
+_MASTER_OUTPUT_COLS = _AUTO_OUTPUT_COLS  # deprecated alias
 
 
-def update_master_tenders(batch_folder: str) -> None:
+def update_auto_tenders(batch_folder: str) -> None:
     """
-    Append every tender from this batch's daily files into the master ledger.
-    Deduplicates by TENDER_ID so re-runs are safe. New data takes priority.
+    Append every tender from this batch's daily files into the auto ledger
+    (auto_tenders.xlsx). Deduplicates by TENDER_ID so re-runs are safe.
+    New data takes priority.
     """
     from openpyxl.worksheet.table import Table, TableStyleInfo
     from openpyxl.utils import get_column_letter
@@ -752,35 +758,35 @@ def update_master_tenders(batch_folder: str) -> None:
             df = pd.read_excel(os.path.join(batches_dir, fname), dtype=str)
             new_frames.append(df)
         except Exception as e:
-            logging.warning(f"Master update — could not read {fname}: {e}")
+            logging.warning(f"Auto ledger update — could not read {fname}: {e}")
 
     if not new_frames:
-        logging.info("Master update — no new tenders in batch")
+        logging.info("Auto ledger update — no new tenders in batch")
         return
 
     new_df = pd.concat(new_frames, ignore_index=True)
     new_df.columns = [c.strip() for c in new_df.columns]
-    new_df = new_df[[c for c in _MASTER_OUTPUT_COLS if c in new_df.columns]]
-    for col in _MASTER_OUTPUT_COLS:
+    new_df = new_df[[c for c in _AUTO_OUTPUT_COLS if c in new_df.columns]]
+    for col in _AUTO_OUTPUT_COLS:
         if col not in new_df.columns:
             new_df[col] = "AUTOMATIC" if col == "INGESTION_METHOD" else None
-    new_df = new_df[_MASTER_OUTPUT_COLS]
+    new_df = new_df[_AUTO_OUTPUT_COLS]
 
-    # Load existing master
-    if os.path.exists(MASTER_FILE):
+    # Load existing auto ledger
+    if os.path.exists(AUTO_FILE):
         try:
-            existing = pd.read_excel(MASTER_FILE, dtype=str)
+            existing = pd.read_excel(AUTO_FILE, dtype=str)
             from master_schema import read_template_schema
             existing = read_template_schema(existing)
-            existing = existing[[c for c in _MASTER_OUTPUT_COLS if c in existing.columns]]
-            for col in _MASTER_OUTPUT_COLS:
+            existing = existing[[c for c in _AUTO_OUTPUT_COLS if c in existing.columns]]
+            for col in _AUTO_OUTPUT_COLS:
                 if col not in existing.columns:
                     existing[col] = None
-            existing = existing[_MASTER_OUTPUT_COLS]
+            existing = existing[_AUTO_OUTPUT_COLS]
         except Exception:
-            existing = pd.DataFrame(columns=_MASTER_OUTPUT_COLS)
+            existing = pd.DataFrame(columns=_AUTO_OUTPUT_COLS)
     else:
-        existing = pd.DataFrame(columns=_MASTER_OUTPUT_COLS)
+        existing = pd.DataFrame(columns=_AUTO_OUTPUT_COLS)
 
     # New data first so it wins deduplication
     combined = pd.concat([new_df, existing], ignore_index=True)
@@ -798,7 +804,7 @@ def update_master_tenders(batch_folder: str) -> None:
         if norm:
             seen.add(norm)
     combined = combined.loc[keep].reset_index(drop=True)
-    logging.info(f"Master update — {len(new_df)} new, {dupes} duplicates skipped, {len(combined)} total")
+    logging.info(f"Auto ledger update — {len(new_df)} new, {dupes} duplicates skipped, {len(combined)} total")
 
     # Sort newest first
     combined["REPORT_DATE"] = pd.to_datetime(combined["REPORT_DATE"], errors="coerce")
@@ -822,7 +828,7 @@ def update_master_tenders(batch_folder: str) -> None:
         right=Side(style="thin", color="9DC3E6"),
     )
 
-    os.makedirs(os.path.dirname(MASTER_FILE), exist_ok=True)
+    os.makedirs(os.path.dirname(AUTO_FILE), exist_ok=True)
     wb = Workbook()
     ws = wb.active
     ws.title = "TENDER REPORT"
@@ -863,9 +869,13 @@ def update_master_tenders(batch_folder: str) -> None:
 
     last_col = get_column_letter(len(all_cols))
     last_row = len(combined) + 1
-    tbl = Table(displayName="MasterTenders", ref=f"A1:{last_col}{last_row}")
+    tbl = Table(displayName="AutoTenders", ref=f"A1:{last_col}{last_row}")
     tbl.tableStyleInfo = TableStyleInfo(name="TableStyleMedium2", showRowStripes=True)
     ws.add_table(tbl)
 
-    wb.save(MASTER_FILE)
-    logging.info(f"Master tender file saved: {MASTER_FILE} ({len(combined)} total rows)")
+    wb.save(AUTO_FILE)
+    logging.info(f"Auto tender file saved: {AUTO_FILE} ({len(combined)} total rows)")
+
+
+# Deprecated alias — remove once all callers migrate to update_auto_tenders
+update_master_tenders = update_auto_tenders
