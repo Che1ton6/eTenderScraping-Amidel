@@ -52,6 +52,7 @@ jobs:
       packages: write
     outputs:
       image_tag: ${{ steps.meta.outputs.image_tag }}
+      image_latest: ${{ steps.meta.outputs.image_latest }}
     steps:
       - uses: actions/checkout@v4
 
@@ -92,4 +93,7 @@ jobs:
         with:
           app-name: ${{ env.AZURE_WEBAPP_NAME }}
           publish-profile: ${{ secrets.AZURE_WEBAPP_PUBLISH_PROFILE }}
-          images: ${{ needs.build-and-push.outputs.image_tag }}
+          # Deploy the :latest tag so App Service auto-pulls new builds without
+          # a manual tag update. The immutable :{sha} tag still exists in GHCR
+          # for rollback (see App Service -> Deployment Center to pin manually).
+          images: ${{ needs.build-and-push.outputs.image_latest }}
