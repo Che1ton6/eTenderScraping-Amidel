@@ -251,10 +251,19 @@ class TenderScraper:
             tenderDescription = self.utils.cleanText(tds[2].text)
             # eSubmission is rendered as an icon (<span class="esubAllowed|esubnotAllowed">),
             # never as text, so tds[3].text is always empty — read the class instead.
-            try:
-                esubClass = tds[3].find_element(By.TAG_NAME, "span").get_attribute("class") or ""
-            except NoSuchElementException:
-                esubClass = ""
+            # The rest of the row (category/description) can be ready before this
+            # one cell's icon has finished painting, so a single NoSuchElementException
+            # isn't necessarily "no answer exists" — retry briefly before giving up,
+            # re-fetching tds[3] fresh each attempt in case of a stale reference.
+            esubClass = ""
+            for _esub_attempt in range(3):
+                try:
+                    esubClass = row.find_elements(By.TAG_NAME, "td")[3].find_element(By.TAG_NAME, "span").get_attribute("class") or ""
+                    break
+                except (NoSuchElementException, IndexError):
+                    if _esub_attempt < 2:
+                        time.sleep(0.5)
+                    esubClass = ""
             advertisedStr = self.utils.cleanText(tds[4].text)
             
             # Parse publication date
