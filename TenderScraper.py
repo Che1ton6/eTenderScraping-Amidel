@@ -249,7 +249,12 @@ class TenderScraper:
             # Extract basic information
             category = self.utils.cleanText(tds[1].text)
             tenderDescription = self.utils.cleanText(tds[2].text)
-            esubRaw = self.utils.cleanText(tds[3].text)
+            # eSubmission is rendered as an icon (<span class="esubAllowed|esubnotAllowed">),
+            # never as text, so tds[3].text is always empty — read the class instead.
+            try:
+                esubClass = tds[3].find_element(By.TAG_NAME, "span").get_attribute("class") or ""
+            except NoSuchElementException:
+                esubClass = ""
             advertisedStr = self.utils.cleanText(tds[4].text)
             
             # Parse publication date
@@ -268,15 +273,14 @@ class TenderScraper:
                     return "TOO_OLD"
                 return False
             
-            # Process e-submission status
-            if "✔" in esubRaw or "tick" in esubRaw.lower():
+            # Process e-submission status (from the icon class, not text — see above)
+            if "esubnotallowed" in esubClass.lower():
+                esubmission = "No"
+            elif "esuballowed" in esubClass.lower():
                 esubmission = "Yes"
-            elif "x" in esubRaw.lower():
-                esubmission = "No"
-            elif esubRaw == "":
-                esubmission = "No"
             else:
-                esubmission = esubRaw
+                logging.warning(f"Unrecognized eSubmission indicator class: '{esubClass}'")
+                esubmission = ""
             
             # Expand row to get detailed information
             expandBtn = tds[0]

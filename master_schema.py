@@ -140,6 +140,21 @@ def apply_template_schema(df: pd.DataFrame) -> pd.DataFrame:
     if "COST_OF_SALES_ESTIMATE" in out.columns:
         out = out.rename(columns=_INTERNAL_TO_TEMPLATE)
 
+    # Guard: ESUBMISSION must be Yes/No/Unverified/blank only. Catches
+    # upstream bugs (e.g. the 2026-09 column-shift bug, or the icon-vs-text
+    # bug that silently forced everything to "No") before they reach the
+    # ledger or Power BI's filter list. "Unverified" marks historical rows
+    # recorded before the scraper fix, whose true value was never captured.
+    if "ESUBMISSION" in out.columns:
+        def _clean_esub(v):
+            if v is None or (isinstance(v, float) and pd.isna(v)):
+                return v
+            s = str(v).strip()
+            if not s:
+                return None
+            return s if s.upper() in ("YES", "NO", "UNVERIFIED") else None
+        out["ESUBMISSION"] = out["ESUBMISSION"].apply(_clean_esub)
+
     watch_set = set(WATCHLIST_DEPARTMENTS)
     soe_series = out.get("SOE", pd.Series([None] * len(out)))
     dept_series = out.get("DEPARTMENT", pd.Series([None] * len(out)))
