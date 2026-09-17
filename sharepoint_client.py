@@ -186,9 +186,43 @@ def upload_batch_folder(local_folder: str) -> int:
 
 
 _UPLOAD_SMALL_LIMIT = 4 * 1024 * 1024
+_UPLOAD_RETRY_STATUSES = (423, 429, 503, 504)
+_UPLOAD_MAX_RETRIES = 5
+_UPLOAD_RETRY_BASE_DELAY = 5.0  # seconds; doubles each attempt
 
 
 def _upload_file(local_src: str, remote_path: str) -> None:
+    """
+    Upload with retry-with-backoff on transient failures (423 Locked —
+    someone has the file open in Excel/OneDrive — plus 429/503/504).
+    A locked file used to fail the whole upload on the first attempt with
+    no retry, silently leaving stale data in place while the run otherwise
+    reported success. Retries up to _UPLOAD_MAX_RETRIES times, waiting
+    longer each time, before giving up and raising.
+    """
+    import time as _time
+
+    last_exc: Exception | None = None
+    for attempt in range(1, _UPLOAD_MAX_RETRIES + 1):
+        try:
+            _upload_file_once(local_src, remote_path)
+            return
+        except httpx.HTTPStatusError as e:
+            last_exc = e
+            status = e.response.status_code
+            if status not in _UPLOAD_RETRY_STATUSES or attempt == _UPLOAD_MAX_RETRIES:
+                raise
+            delay = _UPLOAD_RETRY_BASE_DELAY * (2 ** (attempt - 1))
+            log.warning(
+                "Upload of %s got HTTP %d (attempt %d/%d) — retrying in %.0fs",
+                remote_path, status, attempt, _UPLOAD_MAX_RETRIES, delay,
+            )
+            _time.sleep(delay)
+    if last_exc:
+        raise last_exc
+
+
+def _upload_file_once(local_src: str, remote_path: str) -> None:
     token = _acquire_token()
     with httpx.Client(timeout=300.0) as client:
         _, drive_id = _get_site_and_drive(client, token)

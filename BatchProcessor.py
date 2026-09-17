@@ -788,8 +788,12 @@ def update_auto_tenders(batch_folder: str) -> None:
     else:
         existing = pd.DataFrame(columns=_AUTO_OUTPUT_COLS)
 
-    # New data first so it wins deduplication
-    combined = pd.concat([new_df, existing], ignore_index=True)
+    # Existing data first so it wins deduplication — the ledger is append-only.
+    # A TENDER_ID already on file keeps its existing row untouched (including
+    # any manual corrections applied to it); only TENDER_IDs never seen before
+    # get added from this scrape. Re-scraping a known tender must never
+    # silently overwrite data that's already been corrected or verified.
+    combined = pd.concat([existing, new_df], ignore_index=True)
 
     seen  = set()
     keep  = []
@@ -804,7 +808,8 @@ def update_auto_tenders(batch_folder: str) -> None:
         if norm:
             seen.add(norm)
     combined = combined.loc[keep].reset_index(drop=True)
-    logging.info(f"Auto ledger update — {len(new_df)} new, {dupes} duplicates skipped, {len(combined)} total")
+    new_added = len(combined) - len(existing)
+    logging.info(f"Auto ledger update — {new_added} new rows added, {dupes} duplicates skipped (existing data preserved), {len(combined)} total")
 
     # Sort newest first
     combined["REPORT_DATE"] = pd.to_datetime(combined["REPORT_DATE"], errors="coerce")
