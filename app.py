@@ -15,6 +15,14 @@ Endpoints:
                              {run_id, state, started_at, finished_at, summary,
                              error}. Poll to see how the current or last run
                              went.
+    GET  /audit             - Header X-Trigger-Secret must match RUN_SCRAPE_SECRET.
+                             Downloads auto_tenders.xlsx + master_tenders.xlsx
+                             fresh from SharePoint (whatever is currently live
+                             there, e.g. right after a manual upload) and
+                             checks for the corruption classes this project
+                             has hit before: garbage ESUBMISSION values,
+                             duplicate TENDER_IDs, missing schema columns,
+                             future-dated batches. Returns {"ok": bool, ...}.
 
 The 202 pattern is required because Azure App Service enforces a hard 230s
 front-door timeout, and a real scrape takes 5-15 minutes.
@@ -185,6 +193,38 @@ def run_scrape_endpoint():
 @app.get("/run-scrape/status")
 def run_scrape_status():
     return jsonify(_snapshot_state()), 200
+
+
+@app.get("/audit")
+def audit_endpoint():
+    expected = os.environ.get("RUN_SCRAPE_SECRET", "")
+    supplied = request.headers.get("X-Trigger-Secret", "")
+    if not expected or supplied != expected:
+        return jsonify({"error": "unauthorized"}), 401
+
+    if sharepoint_client is None:
+        return jsonify({"error": "sharepoint_client unavailable"}), 503
+
+    import tempfile
+    import audit as audit_mod
+
+    with tempfile.TemporaryDirectory() as tmp:
+        auto_tmp = os.path.join(tmp, "auto_tenders.xlsx")
+        master_tmp = os.path.join(tmp, "master_tenders.xlsx")
+        try:
+            sharepoint_client.download_auto(auto_tmp)
+            sharepoint_client.download_master(master_tmp)
+        except Exception as e:
+            log.exception("Audit: SharePoint download failed: %s", e)
+            return jsonify({"error": f"SharePoint download failed: {e}"}), 502
+
+        try:
+            result = audit_mod.run_audit(auto_tmp, master_tmp)
+        except Exception as e:
+            log.exception("Audit: check failed: %s", e)
+            return jsonify({"error": f"audit failed: {e}"}), 500
+
+    return jsonify(result), (200 if result["ok"] else 409)
 
 
 if __name__ == "__main__":
